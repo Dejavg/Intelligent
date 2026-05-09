@@ -1,0 +1,1 @@
+"""Seewo SmartGrade backend package."""

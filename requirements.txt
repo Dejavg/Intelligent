@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+# Optional real OCR integrations:
+# paddleocr
+# tencentcloud-sdk-python
+# pillow
+# pix2tex

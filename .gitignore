@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+backend/data/
+backend/uploads/*
+!backend/uploads/.gitkeep
+server.log
+server.err.log
+.env
+.DS_Store
+node_modules/
