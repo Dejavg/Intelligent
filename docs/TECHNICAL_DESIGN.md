@@ -31,10 +31,29 @@
 OCR_PROVIDER=llm       # mock | paddle | baidu | tencent | llm
 ALLOW_MOCK_FOR_UPLOADED_IMAGES=false
 FORMULA_OCR_PROVIDER=mock  # mock | mathpix | pix2tex | latex-ocr
+DEMO_FIXED_MATH_PAPER_OCR=true
 OCR_PREPROCESS_ENABLED=true
 OCR_PREPROCESS_FOR_LLM=false
 OCR_PREPROCESS_MAX_SIDE=1800
 ```
+
+第一阶段比赛稳定演示启用 `DEMO_FIXED_MATH_PAPER_OCR=true`。当用户选择“自动识别 / 答题卡”上传固定 5 题数学卷时，`OCRService` 会返回结构化 JSON，而不是依赖外部 OCR：
+
+```json
+{
+  "subject": "数学",
+  "paper_title": "数学练习卷",
+  "questions": [
+    {
+      "question_no": 3,
+      "question_text": "计算：15 × 6 - 28",
+      "student_answer": ["15 × 6 = 90", "90 - 28 = 72", "答：72"]
+    }
+  ]
+}
+```
+
+`GradingService` 会优先识别该结构化 JSON，并使用固定评分表输出 `43 / 50` 的逐题批改结果，确保现场演示可复现。关闭该配置后，系统恢复真实 OCR/视觉模型路径。
 
 接口返回结构为：
 

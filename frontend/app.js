@@ -289,11 +289,11 @@ async function renderResult(submissionId) {
         </div>
         <div class="result-grid">
           <aside class="panel">
+            ${submission.image_url ? `<h3>原始试卷图片</h3><img class="preview paper-preview" src="${submission.image_url}" alt="作业图片" />` : ""}
             ${scorePanel(submission)}
             <h3>OCR 识别结果</h3>
             ${engineInfo(submission)}
-            <div class="ocr-box">${escapeHtml(submission.ocr_text || "暂无 OCR 内容")}</div>
-            ${submission.image_url ? `<h3>图片预览</h3><img class="preview" src="${submission.image_url}" alt="作业图片" />` : ""}
+            ${ocrPreview(submission)}
           </aside>
           <div class="panel">
             ${gradingDetail(submission)}
@@ -344,8 +344,35 @@ function scorePanel(submission) {
   return `
     <div class="score-panel">
       <span class="status ${statusClass}">${escapeHtml(submission.status)}</span>
-      <div class="score">${score}<small> / ${full}</small></div>
+      <div class="score">${formatScore(score)}<small> / ${formatScore(full)}</small></div>
       <strong>${submission.grading_result?.is_correct ? "答案正确" : "需要订正"}</strong>
+    </div>
+  `;
+}
+
+function ocrPreview(submission) {
+  const paper = parseJson(submission.ocr_text);
+  const questions = Array.isArray(paper?.questions) ? paper.questions : [];
+  if (!questions.length) {
+    return `<div class="ocr-box">${escapeHtml(submission.ocr_text || "暂无 OCR 内容")}</div>`;
+  }
+  return `
+    <div class="ocr-paper">
+      <div class="section-head compact">
+        <div>
+          <strong>${escapeHtml(paper.paper_title || "识别试卷")}</strong>
+          <p class="muted">${escapeHtml(paper.subject || "自动识别")} · ${questions.length} 道题</p>
+        </div>
+      </div>
+      <div class="ocr-question-list">
+        ${questions.map((question) => `
+          <div class="ocr-question">
+            <strong>第 ${escapeHtml(question.question_no)} 题</strong>
+            <p>${escapeHtml(question.question_text || "")}</p>
+            <div class="ocr-steps">${(question.student_answer || []).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+          </div>
+        `).join("")}
+      </div>
     </div>
   `;
 }
@@ -361,7 +388,7 @@ function gradingDetail(submission) {
       ${Array.isArray(sheet.questions) && sheet.questions.length ? `<span class="tag">逐题：${sheet.questions.length} 题</span>` : ""}
     </div>
     <h3>评分维度</h3>
-    ${dimensionBars(result.dimension_scores || {}, submission.assignment.full_score)}
+    ${dimensionBars(result.dimension_scores || {}, result.full_score || submission.assignment.full_score)}
     ${answerSheetDetails(result)}
     <h3>${isComposition ? "内容与表达分析" : "解题过程分析"}</h3>
     <p class="muted">${escapeHtml(result.process_analysis || result.content_analysis || "暂无分析")}</p>
@@ -394,7 +421,7 @@ function answerSheetDetails(result) {
       <div class="metric-card"><span>题目数</span><strong>${questions.length}</strong></div>
       <div class="metric-card"><span>正确题</span><strong>${correctCount}</strong></div>
       <div class="metric-card"><span>需订正</span><strong>${questions.length - correctCount}</strong></div>
-      <div class="metric-card"><span>整卷得分</span><strong>${escapeHtml(totalScore)} / ${escapeHtml(totalFull)}</strong></div>
+      <div class="metric-card"><span>整卷得分</span><strong>${escapeHtml(formatScore(totalScore))} / ${escapeHtml(formatScore(totalFull))}</strong></div>
     </div>
     <div class="bar-list">
       ${questions.map((question, index) => {
@@ -402,18 +429,20 @@ function answerSheetDetails(result) {
         const score = question.score ?? 0;
         const full = question.full_score ?? "-";
         const mistakes = Array.isArray(question.mistakes) ? question.mistakes : [];
+        const status = questionStatus(question);
+        const statusClass = questionStatusClass(question);
         return `
-          <div class="card question-card ${question.is_correct ? "is-correct" : "needs-review"}">
+          <div class="card question-card ${statusClass}">
             <div class="section-head" style="margin-bottom:10px">
               <div>
                 <strong>第 ${escapeHtml(no)} 题 · ${escapeHtml(question.subject || "自动识别")} · ${escapeHtml(question.question_type || "题型未定")}</strong>
                 <p class="muted">${escapeHtml(question.question_text || "未识别到完整题干")}</p>
               </div>
-              <span class="score-pill ${question.is_correct ? "ok" : "bad"}">${question.is_correct ? "正确" : "订正"} · ${escapeHtml(score)} / ${escapeHtml(full)}</span>
+              <span class="score-pill ${statusClass}">${status} · ${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</span>
             </div>
             <p class="muted"><strong>学生作答：</strong>${escapeHtml(question.student_answer || "未识别到作答")}</p>
             <p class="muted"><strong>分析：</strong>${escapeHtml(question.process_analysis || question.comment || "暂无分析")}</p>
-            ${mistakes.length ? `<div class="bar-list">${mistakes.map((item) => `<p class="muted"><strong>${escapeHtml(item.step || "问题")}：</strong>${escapeHtml(item.error || item.reason || item)}</p>`).join("")}</div>` : ""}
+            ${mistakes.length ? `<div class="mistake-list">${mistakes.map((item) => `<div class="mistake-highlight"><strong>${escapeHtml(item.step || "问题")}</strong><p>${escapeHtml(item.error || item.reason || item)}</p></div>`).join("")}</div>` : ""}
             ${question.correct_solution ? `<div class="code-box">${escapeHtml(question.correct_solution)}</div>` : ""}
             ${question.suggestion ? `<p class="muted"><strong>建议：</strong>${escapeHtml(question.suggestion)}</p>` : ""}
             <div class="tag-list" style="margin-top:10px">
@@ -1022,6 +1051,32 @@ function statusClassName(status = "") {
   if (status.includes("复核")) return "review";
   if (status.includes("AI") || status.includes("返回")) return "done";
   return "wait";
+}
+
+function questionStatus(question) {
+  if (question.is_correct) return "正确";
+  if (question.status === "partial" || (Number(question.score) || 0) > 0) return "部分正确";
+  return "错误";
+}
+
+function questionStatusClass(question) {
+  if (question.is_correct) return "is-correct";
+  if (question.status === "partial" || (Number(question.score) || 0) > 0) return "is-partial";
+  return "is-wrong";
+}
+
+function formatScore(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value ?? "";
+  return Math.abs(number - Math.round(number)) < 0.001 ? String(Math.round(number)) : number.toFixed(1);
+}
+
+function parseJson(value) {
+  try {
+    return JSON.parse(value || "");
+  } catch {
+    return null;
+  }
 }
 
 function percent(value) {

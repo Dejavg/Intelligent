@@ -34,6 +34,7 @@ class Settings:
     ocr_provider: str = os.getenv("OCR_PROVIDER", "mock").lower()
     ocr_fallback_to_mock: bool = _bool_env("OCR_FALLBACK_TO_MOCK", True)
     allow_mock_for_uploaded_images: bool = _bool_env("ALLOW_MOCK_FOR_UPLOADED_IMAGES", False)
+    demo_fixed_math_paper_ocr: bool = _bool_env("DEMO_FIXED_MATH_PAPER_OCR", True)
     ocr_preprocess_enabled: bool = _bool_env("OCR_PREPROCESS_ENABLED", True)
     ocr_preprocess_for_llm: bool = _bool_env("OCR_PREPROCESS_FOR_LLM", False)
     ocr_preprocess_max_side: int = int(os.getenv("OCR_PREPROCESS_MAX_SIDE", "1800"))

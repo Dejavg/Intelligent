@@ -16,6 +16,8 @@ def cleanup_demo_rows():
         db.query(ClassRoom).filter(ClassRoom.name == "自动化测试班").delete()
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-bulk.png").all():
             db.delete(submission)
+        for submission in db.query(Submission).filter(Submission.image_name == "pytest-demo-paper.png").all():
+            db.delete(submission)
         db.commit()
 
 
@@ -205,6 +207,42 @@ x=4
         self.assertGreaterEqual(data["summary"]["total_cases"], 3)
         self.assertGreaterEqual(data["summary"]["wrong_question_accuracy"], 0.6)
         self.assertTrue(data["cases"])
+
+    def test_fixed_demo_math_paper_flow(self):
+        assignments = self.client.get("/api/assignments").json()["data"]
+        assignment = next(item for item in assignments if item["subject"] == "自动识别")
+        upload = self.client.post(
+            "/api/upload",
+            json={
+                "student_id": 1,
+                "assignment_id": assignment["id"],
+                "subject": "自动识别",
+                "question_type": "答题卡",
+                "image_name": "pytest-demo-paper.png",
+                "image_data": "data:image/png;base64,iVBORw0KGgo=",
+            },
+        )
+        self.assertEqual(upload.status_code, 200)
+        submission_id = upload.json()["data"]["submission_id"]
+
+        ocr = self.client.post("/api/ocr", json={"submission_id": submission_id})
+        self.assertEqual(ocr.status_code, 200)
+        self.assertEqual(ocr.json()["data"]["ocr"]["engine"], "DemoMathPaperOCR")
+        self.assertEqual(len(ocr.json()["data"]["ocr"]["blocks"]) - 1, 5)
+
+        grade = self.client.post("/api/grade", json={"submission_id": submission_id})
+        self.assertEqual(grade.status_code, 200)
+        result = grade.json()["data"]["grading_result"]
+        self.assertEqual(result["ai_engine"], "DemoRule:FixedMathPaper")
+        self.assertEqual(result["score"], 43)
+        self.assertEqual(result["full_score"], 50)
+        questions = result["ai_metadata"]["answer_sheet"]["questions"]
+        self.assertEqual(len(questions), 5)
+        self.assertEqual(questions[2]["score"], 6)
+        self.assertIn("62", questions[2]["correct_solution"])
+        self.assertNotIn("72；答", questions[2]["correct_solution"])
+        self.assertEqual(questions[3]["score"], 7)
+        self.assertEqual(questions[3]["status"], "partial")
 
     def test_image_preprocess_creates_enhanced_copy(self):
         try:

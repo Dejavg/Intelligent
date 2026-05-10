@@ -79,6 +79,7 @@ def runtime_status() -> dict:
             "ocr_provider": settings.ocr_provider,
             "ocr_fallback_to_mock": settings.ocr_fallback_to_mock,
             "allow_mock_for_uploaded_images": settings.allow_mock_for_uploaded_images,
+            "demo_fixed_math_paper_ocr": settings.demo_fixed_math_paper_ocr,
             "ocr_preprocess_enabled": settings.ocr_preprocess_enabled,
             "ocr_preprocess_for_llm": settings.ocr_preprocess_for_llm,
             "ocr_preprocess_max_side": settings.ocr_preprocess_max_side,

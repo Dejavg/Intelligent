@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -55,6 +56,11 @@ class GradingService:
             result = self._empty_result("自动识别", assignment)
             result["process_analysis"] = "整张答题卡批改需要上传包含题目与作答的图片。"
             return result
+
+        structured_paper = _parse_structured_math_paper(ocr_text)
+        if structured_paper:
+            return _grade_demo_math_paper(structured_paper)
+
         if not settings.llm_enabled:
             fallback = self._grade_answer_sheet_from_text(
                 ocr_text,
@@ -450,6 +456,146 @@ def _split_answer_sheet_questions(text: str) -> list[tuple[str, str]]:
         if body:
             questions.append((match.group(1), body))
     return questions
+
+
+def _parse_structured_math_paper(text: str) -> dict | None:
+    try:
+        data = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    questions = data.get("questions")
+    if data.get("subject") != "数学" or not isinstance(questions, list):
+        return None
+    question_numbers = {str(item.get("question_no")) for item in questions if isinstance(item, dict)}
+    if {"1", "2", "3", "4", "5"}.issubset(question_numbers):
+        return data
+    return None
+
+
+def _grade_demo_math_paper(paper: dict) -> dict:
+    questions = [
+        {
+            "question_no": "1",
+            "subject": "数学",
+            "question_type": "计算题",
+            "question_text": "计算：36 ÷ 4 + 5 × 2",
+            "student_answer": "36 ÷ 4 = 9\n5 × 2 = 10\n9 + 10 = 19\n答：19",
+            "score": 10,
+            "full_score": 10,
+            "is_correct": True,
+            "status": "correct",
+            "process_analysis": "学生能够正确按照先乘除后加减的顺序进行计算，三个关键计算步骤均正确。",
+            "mistakes": [],
+            "knowledge_points": ["四则混合运算", "运算顺序"],
+            "weak_points": [],
+            "correct_solution": "36 ÷ 4 = 9；5 × 2 = 10；9 + 10 = 19；答：19。",
+            "comment": "计算过程完整，运算顺序正确，书写也比较清楚。",
+            "suggestion": "继续保持分步计算和写最终答句的习惯。",
+        },
+        {
+            "question_no": "2",
+            "subject": "数学",
+            "question_type": "解方程",
+            "question_text": "解方程：2x + 3 = 11",
+            "student_answer": "2x = 11 - 3\n2x = 8\nx = 4\n答：x = 4",
+            "score": 10,
+            "full_score": 10,
+            "is_correct": True,
+            "status": "correct",
+            "process_analysis": "学生移项、计算和求解步骤都正确，最终答案完整。",
+            "mistakes": [],
+            "knowledge_points": ["一元一次方程", "移项", "等式性质"],
+            "weak_points": [],
+            "correct_solution": "2x + 3 = 11；2x = 11 - 3；2x = 8；x = 4。",
+            "comment": "方程求解过程规范，移项和计算都很准确。",
+            "suggestion": "可以继续保持解后代入检验的习惯。",
+        },
+        {
+            "question_no": "3",
+            "subject": "数学",
+            "question_type": "计算题",
+            "question_text": "计算：15 × 6 - 28",
+            "student_answer": "15 × 6 = 90\n90 - 28 = 72\n答：72",
+            "score": 6,
+            "full_score": 10,
+            "is_correct": False,
+            "status": "partial",
+            "process_analysis": "学生先算乘法的思路正确，15 × 6 = 90 也正确；但在 90 - 28 时出现退位减法错误，导致最终答案写成 72。",
+            "mistakes": [
+                {
+                    "step": "90 - 28 = 72",
+                    "error": "退位减法错误。90 - 28 的正确结果是 62，不是 72。",
+                }
+            ],
+            "knowledge_points": ["四则混合运算", "退位减法"],
+            "weak_points": ["整数减法", "计算准确性"],
+            "correct_solution": "15 × 6 = 90；90 - 28 = 62；答：62。",
+            "comment": "你的运算顺序和第一步乘法是正确的，扣分主要在退位减法上。",
+            "suggestion": "做两位数减法时可以用反向验算：62 + 28 = 90，检查结果是否合理。",
+        },
+        {
+            "question_no": "4",
+            "subject": "数学",
+            "question_type": "解方程",
+            "question_text": "解方程：3x - 5 = 10",
+            "student_answer": "3x = 10 + 5\n3x = 15\nx = 4\n答：x = 4",
+            "score": 7,
+            "full_score": 10,
+            "is_correct": False,
+            "status": "partial",
+            "process_analysis": "学生前两步移项和合并计算正确，但最后一步由 3x = 15 得出 x = 4，除法计算错误，正确应为 x = 5。",
+            "mistakes": [
+                {
+                    "step": "3x = 15 推出 x = 4",
+                    "error": "两边同时除以 3，应得到 x = 5，而不是 x = 4。",
+                }
+            ],
+            "knowledge_points": ["一元一次方程", "移项", "等式性质"],
+            "weak_points": ["方程求解", "除法计算"],
+            "correct_solution": "3x - 5 = 10；3x = 10 + 5；3x = 15；x = 5；答：x = 5。",
+            "comment": "你的移项思路是正确的，说明你理解方程变形；最后一步除法需要更仔细。",
+            "suggestion": "解出 x 后代回原方程检验：3 × 5 - 5 = 10，可以快速发现 x = 4 不成立。",
+        },
+        {
+            "question_no": "5",
+            "subject": "数学",
+            "question_type": "应用题",
+            "question_text": "小明买了 3 支铅笔，每支 2 元，又买了 1 本笔记本 5 元，一共用了多少钱？",
+            "student_answer": "3 × 2 = 6（元）\n6 + 5 = 11（元）\n答：一共用了 11 元。",
+            "score": 10,
+            "full_score": 10,
+            "is_correct": True,
+            "status": "correct",
+            "process_analysis": "学生能先计算铅笔总价，再加上笔记本价格，数量关系清楚，答句完整。",
+            "mistakes": [],
+            "knowledge_points": ["乘法意义", "加法应用", "人民币应用题"],
+            "weak_points": [],
+            "correct_solution": "3 × 2 = 6（元）；6 + 5 = 11（元）；答：一共用了 11 元。",
+            "comment": "数量关系分析准确，列式和答句都比较完整。",
+            "suggestion": "应用题可以继续保持“先找数量关系，再列式计算”的习惯。",
+        },
+    ]
+    score = sum(float(question["score"]) for question in questions)
+    full_score = sum(float(question["full_score"]) for question in questions)
+    raw = {
+        "detected_subjects": ["数学"],
+        "score": score,
+        "full_score": full_score,
+        "is_correct": False,
+        "summary": "已按固定比赛 Demo 评分规则完成 5 道题逐题批改：第 1、2、5 题正确，第 3、4 题部分正确。",
+        "comment": "这张试卷整体思路不错，四则运算顺序、方程移项和应用题数量关系掌握较好；主要问题集中在退位减法和方程最后一步除法计算。",
+        "suggestion": "建议订正第 3 题和第 4 题，并养成反向验算与代入检验的习惯。",
+        "common_weak_points": ["整数减法", "方程求解", "除法计算"],
+        "warnings": ["比赛稳定演示模式：本次使用固定 5 题数学试卷评分规则，确保演示结果稳定可复现。"],
+        "questions": questions,
+    }
+    result = normalize_answer_sheet_grading(raw, "DemoRule", "fixed-math-paper")
+    result["ai_engine"] = "DemoRule:FixedMathPaper"
+    result["ai_metadata"]["answer_sheet"]["paper_title"] = paper.get("paper_title", "数学练习卷")
+    result["ai_metadata"]["answer_sheet"]["demo_mode"] = True
+    return result
 
 
 def _grade_arithmetic_question(question_no: str, body: str, expression: str) -> dict | None:

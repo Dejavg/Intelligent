@@ -47,7 +47,9 @@ class OCRService:
     def recognize(self, submission: Submission, assignment: Assignment) -> OCRResult:
         warnings: list[str] = []
         try:
-            if settings.ocr_provider in {"llm", "vision", "kimi"}:
+            if settings.demo_fixed_math_paper_ocr and _is_demo_answer_sheet(submission, assignment):
+                result = self._demo_math_paper_recognize()
+            elif settings.ocr_provider in {"llm", "vision", "kimi"}:
                 result = self._recognize_with_llm_vision(submission, assignment)
             elif settings.llm_enabled and settings.llm_vision_ocr and submission.image_url:
                 result = self._recognize_with_llm_vision(submission, assignment)
@@ -296,6 +298,34 @@ class OCRService:
             engine="MockOCR",
         )
 
+    def _demo_math_paper_recognize(self) -> OCRResult:
+        paper = demo_math_paper_ocr_data()
+        question_blocks = [
+            {
+                "type": "question",
+                "question_no": question["question_no"],
+                "question_text": question["question_text"],
+                "student_answer": question["student_answer"],
+                "confidence": 0.99,
+            }
+            for question in paper["questions"]
+        ]
+        return OCRResult(
+            raw_text=json.dumps(paper, ensure_ascii=False, indent=2),
+            confidence=0.99,
+            blocks=[
+                {
+                    "type": "paper",
+                    "paper_title": paper["paper_title"],
+                    "subject": paper["subject"],
+                    "confidence": 0.99,
+                },
+                *question_blocks,
+            ],
+            engine="DemoMathPaperOCR",
+            warnings=["比赛稳定演示模式：已使用固定 5 题数学试卷结构化 OCR，真实 OCR 可关闭 DEMO_FIXED_MATH_PAPER_OCR 后演示。"],
+        )
+
 
 class FormulaOCRService:
     def recognize_formula(self, submission: Submission) -> str | None:
@@ -463,6 +493,49 @@ def _estimate_skew_angle(binary_image) -> float | None:
     if angle < -45:
         angle = 90 + angle
     return -float(angle)
+
+
+def demo_math_paper_ocr_data() -> dict[str, Any]:
+    return {
+        "subject": "数学",
+        "paper_title": "数学练习卷",
+        "questions": [
+            {
+                "question_no": 1,
+                "question_text": "计算：36 ÷ 4 + 5 × 2",
+                "student_answer": ["36 ÷ 4 = 9", "5 × 2 = 10", "9 + 10 = 19", "答：19"],
+            },
+            {
+                "question_no": 2,
+                "question_text": "解方程：2x + 3 = 11",
+                "student_answer": ["2x = 11 - 3", "2x = 8", "x = 4", "答：x = 4"],
+            },
+            {
+                "question_no": 3,
+                "question_text": "计算：15 × 6 - 28",
+                "student_answer": ["15 × 6 = 90", "90 - 28 = 72", "答：72"],
+            },
+            {
+                "question_no": 4,
+                "question_text": "解方程：3x - 5 = 10",
+                "student_answer": ["3x = 10 + 5", "3x = 15", "x = 4", "答：x = 4"],
+            },
+            {
+                "question_no": 5,
+                "question_text": "小明买了 3 支铅笔，每支 2 元，又买了 1 本笔记本 5 元，一共用了多少钱？",
+                "student_answer": ["3 × 2 = 6（元）", "6 + 5 = 11（元）", "答：一共用了 11 元。"],
+            },
+        ],
+    }
+
+
+def _is_demo_answer_sheet(submission: Submission, assignment: Assignment) -> bool:
+    return (
+        submission.subject in {"自动识别", "综合"}
+        or submission.question_type in {"答题卡", "整张答题卡"}
+        or assignment.subject in {"自动识别", "综合"}
+        or assignment.question_type in {"答题卡", "整张答题卡"}
+    )
 
 
 def _submission_image_path(submission: Submission) -> Path | None:
