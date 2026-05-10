@@ -585,6 +585,13 @@ def _grading_to_dict(result: GradingResult | None) -> dict | None:
 
 def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
     assignment = submission.assignment
+    result = submission.grading_result
+    answer_sheet = (result.ai_metadata or {}).get("answer_sheet") if result and isinstance(result.ai_metadata, dict) else None
+    grading_full_score = (
+        answer_sheet.get("full_score")
+        if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None
+        else None
+    )
     data = {
         "id": submission.id,
         "student": _user_to_dict(submission.student),
@@ -600,6 +607,7 @@ def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
         "ai_score": submission.ai_score,
         "teacher_score": submission.teacher_score,
         "effective_score": submission.teacher_score if submission.teacher_score is not None else submission.ai_score,
+        "grading_full_score": grading_full_score,
         "status": submission.status,
         "created_at": submission.created_at.isoformat() if submission.created_at else "",
         "reviewed_at": submission.reviewed_at.isoformat() if submission.reviewed_at else "",
@@ -608,7 +616,6 @@ def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
         data["grading_result"] = _grading_to_dict(submission.grading_result)
         data["annotations"] = [_annotation_to_dict(item) for item in submission.annotations]
     else:
-        result = submission.grading_result
         data["is_correct"] = result.is_correct if result else False
         data["weak_points"] = result.weak_points if result else []
         data["comment"] = result.comment if result else ""

@@ -33,7 +33,7 @@ POST /api/grade
 DEMO_FIXED_MATH_PAPER_OCR=true
 ```
 
-此时系统会稳定返回结构化 OCR：5 道题的题干、学生答题步骤和整卷标题。真实图片 OCR 可以在第二阶段通过 `DEMO_FIXED_MATH_PAPER_OCR=false` 切回。
+此时首页和上传页会显示“当前模式：比赛稳定演示模式”，并列出 `OCR_PROVIDER`、`DEMO_FIXED_MATH_PAPER_OCR`、`LLM_ENABLED`、`ALLOW_MOCK_FOR_UPLOADED_IMAGES` 等关键配置。系统会稳定返回结构化 OCR：5 道题的题干、学生答题步骤和整卷标题。真实图片 OCR 可以在第二阶段通过 `DEMO_FIXED_MATH_PAPER_OCR=false` 切回。
 
 真实图片会先进入 OCR 预处理链路。传统 OCR 模式下会执行灰度化、对比度增强、去噪、二值化和倾斜矫正；视觉大模型默认使用原图，可通过 `OCR_PREPROCESS_FOR_LLM=true` 切换为增强图。
 
@@ -58,7 +58,7 @@ DEMO_FIXED_MATH_PAPER_OCR=true
 比赛讲解重点：
 
 - 总分：`43 / 50`；
-- 第 3 题：学生写 `90 - 28 = 72`，系统指出正确答案为 `62`；
+- 第 3 题：学生写 `90 - 28 = 72`，系统给 `6 / 10`，标记为“错误”，并指出正确答案为 `62`；
 - 第 4 题：移项和合并正确，最后 `3x = 15` 推出 `x = 4` 错误，显示为“部分正确”，得 `7 / 10`；
 - 正确题绿色、部分正确黄色、错误步骤红色高亮。
 

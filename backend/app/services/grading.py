@@ -270,16 +270,27 @@ class GradingService:
         structure = 4
         spelling = 2
 
-        if "go to park" in lower:
+        if "go to park" in lower or "go to the park" in lower:
             grammar -= 2
+            original = "I go to the park" if "go to the park" in lower else "I go to park"
             errors.append(
                 {
-                    "original": "I go to park",
+                    "original": original,
                     "suggestion": "I went to the park",
-                    "reason": "描述过去周末应使用过去时，同时 park 前需要冠词 the。",
+                    "reason": "描述过去周末应使用过去时；如果缺少 the，还需要补充 park 前的冠词。",
                 }
             )
             weak_points.extend(["一般过去时", "冠词使用"])
+        if "went to park" in lower:
+            grammar -= 1
+            errors.append(
+                {
+                    "original": "I went to park",
+                    "suggestion": "I went to the park",
+                    "reason": "park 表示具体地点时通常需要冠词 the。",
+                }
+            )
+            weak_points.append("冠词使用")
         if "play football" in lower and "played football" not in lower:
             grammar -= 1
             errors.append(
@@ -521,7 +532,7 @@ def _grade_demo_math_paper(paper: dict) -> dict:
             "score": 6,
             "full_score": 10,
             "is_correct": False,
-            "status": "partial",
+            "status": "wrong",
             "process_analysis": "学生先算乘法的思路正确，15 × 6 = 90 也正确；但在 90 - 28 时出现退位减法错误，导致最终答案写成 72。",
             "mistakes": [
                 {
@@ -653,10 +664,17 @@ def _grade_linear_equation_question(question_no: str, body: str, equation: dict)
     weak_points = []
 
     if correct:
-        base_score = 10
-        analysis = "学生移项、合并和最终求解都正确，解题步骤完整。"
-        comment = "本题方程求解过程清晰，最终答案正确。"
-        suggestion = "继续保持每一步写出等式变化的习惯。"
+        if intermediate_correct:
+            base_score = 10
+            analysis = "学生移项、合并和最终求解都正确，解题步骤完整。"
+            comment = "本题方程求解过程清晰，最终答案正确。"
+            suggestion = "继续保持每一步写出等式变化的习惯。"
+        else:
+            base_score = 8
+            weak_points = ["步骤书写"]
+            analysis = "学生最终答案正确，但中间移项或合并步骤没有完整呈现，过程依据还不够充分。"
+            comment = "你的最终答案是对的，如果能把关键步骤补充完整，得分会更稳。"
+            suggestion = "方程题建议写出移项、合并同类项、除以系数三步，便于老师确认思路。"
     elif student_answer is not None and intermediate_correct:
         base_score = 7
         mistakes.append(
@@ -711,10 +729,16 @@ def _grade_simple_word_problem(question_no: str, body: str, problem: dict) -> di
     mistakes = []
     weak_points = []
     if correct:
-        base_score = 10
-        analysis = "学生能够先算铅笔总价，再加上笔记本价格，数量关系和最终答案正确。"
-        comment = "本题数量关系找得准确，答句也比较完整。"
-        suggestion = "应用题继续保持先列数量关系、再写答句的习惯。"
+        has_unit = "元" in _student_part(body)
+        base_score = 10 if has_unit else 9
+        weak_points = [] if has_unit else ["单位意识"]
+        analysis = (
+            "学生能够先算铅笔总价，再加上笔记本价格，数量关系和最终答案正确。"
+            if has_unit
+            else "学生数量关系和最终答案正确，但答句中没有写清楚单位。"
+        )
+        comment = "本题数量关系找得准确，答句也比较完整。" if has_unit else "你的列式和答案正确，答句里补上单位会更规范。"
+        suggestion = "应用题继续保持先列数量关系、再写答句的习惯。" if has_unit else "应用题最后建议写成“11 元”，避免答案信息不完整。"
     else:
         base_score = 5 if student_answer is not None else 3
         shown = _format_number(student_answer) if student_answer is not None else "未写出"
@@ -845,8 +869,20 @@ def _eval_numeric_node(node: ast.AST) -> float:
 
 
 def _extract_equation_answer(body: str) -> float | None:
-    matches = re.findall(r"(?<!\d)x\s*=\s*([+-]?\d+(?:\.\d+)?)", body.replace(" ", ""))
-    return float(matches[-1]) if matches else None
+    matches = re.findall(
+        r"(?<![\dA-Za-z])x\s*=\s*([+-]?\d+(?:\.\d+)?(?:/[+-]?\d+(?:\.\d+)?)?)(?![\d.])",
+        body.replace(" ", ""),
+    )
+    if not matches:
+        return None
+    answer = matches[-1]
+    if "/" in answer:
+        numerator, denominator = answer.split("/", 1)
+        denominator_value = float(denominator)
+        if denominator_value == 0:
+            return None
+        return float(numerator) / denominator_value
+    return float(answer)
 
 
 def _extract_numeric_answer(body: str) -> float | None:

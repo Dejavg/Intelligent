@@ -204,7 +204,7 @@ x=4
         response = self.client.get("/api/evaluation/grading")
         self.assertEqual(response.status_code, 200)
         data = response.json()["data"]
-        self.assertGreaterEqual(data["summary"]["total_cases"], 3)
+        self.assertGreaterEqual(data["summary"]["total_cases"], 10)
         self.assertGreaterEqual(data["summary"]["wrong_question_accuracy"], 0.6)
         self.assertTrue(data["cases"])
 
@@ -239,6 +239,7 @@ x=4
         questions = result["ai_metadata"]["answer_sheet"]["questions"]
         self.assertEqual(len(questions), 5)
         self.assertEqual(questions[2]["score"], 6)
+        self.assertEqual(questions[2]["status"], "wrong")
         self.assertIn("62", questions[2]["correct_solution"])
         self.assertNotIn("72；答", questions[2]["correct_solution"])
         self.assertEqual(questions[3]["score"], 7)

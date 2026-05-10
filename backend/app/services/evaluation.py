@@ -9,6 +9,7 @@ from .grading import GradingService
 @dataclass(frozen=True)
 class BenchmarkCase:
     name: str
+    subject: str
     ocr_text: str
     expected_score: float
     expected_full_score: float
@@ -17,28 +18,16 @@ class BenchmarkCase:
 
 
 class EvaluationService:
-    """Small deterministic benchmark for grading accuracy demonstrations."""
+    """Deterministic benchmark for competition grading demonstrations."""
 
     def __init__(self, grading_service: GradingService | None = None) -> None:
         self.grading_service = grading_service or GradingService()
 
     def run_grading_benchmark(self) -> dict:
-        assignment = Assignment(
-            title="AI 自动识别整张答题卡评测",
-            subject="自动识别",
-            question_type="答题卡",
-            question="整张答题卡",
-            standard_answer="",
-            full_score=100,
-            knowledge_points=["整张答题卡", "数学过程批改"],
-        )
         case_results = []
         for case in _benchmark_cases():
-            result = self.grading_service._grade_answer_sheet_from_text(
-                case.ocr_text,
-                assignment,
-                ["评测模式：使用标准 OCR 文本直接测试批改模块。"],
-            )
+            assignment = _assignment_for_case(case)
+            result = self._grade_case(case, assignment)
             predicted_wrong = _wrong_question_numbers(result or {})
             actual_score = float((result or {}).get("score", 0))
             score_error = abs(actual_score - case.expected_score)
@@ -47,6 +36,7 @@ class EvaluationService:
             case_results.append(
                 {
                     "name": case.name,
+                    "subject": case.subject,
                     "expected_score": case.expected_score,
                     "actual_score": actual_score,
                     "expected_full_score": case.expected_full_score,
@@ -61,24 +51,16 @@ class EvaluationService:
             )
 
         total = len(case_results)
+        score_passed = sum(1 for item in case_results if item["score_pass"])
+        wrong_matched = sum(1 for item in case_results if item["wrong_question_match"])
         passed = sum(1 for item in case_results if item["passed"])
         return {
             "summary": {
                 "total_cases": total,
                 "passed_cases": passed,
                 "pass_rate": round(passed / total, 4) if total else 0,
-                "score_within_tolerance_rate": round(
-                    sum(1 for item in case_results if item["score_pass"]) / total,
-                    4,
-                )
-                if total
-                else 0,
-                "wrong_question_accuracy": round(
-                    sum(1 for item in case_results if item["wrong_question_match"]) / total,
-                    4,
-                )
-                if total
-                else 0,
+                "score_within_tolerance_rate": round(score_passed / total, 4) if total else 0,
+                "wrong_question_accuracy": round(wrong_matched / total, 4) if total else 0,
                 "average_score_error": round(
                     sum(float(item["score_error"]) for item in case_results) / total,
                     2,
@@ -87,8 +69,60 @@ class EvaluationService:
                 else 0,
             },
             "cases": case_results,
-            "rubric": "内置评测集覆盖全对、计算错误、方程末步错误和应用题数量关系，主要用于比赛 Demo 的可解释准确率展示。",
+            "rubric": (
+                "内置 10 条比赛评测样例，覆盖数学全对、计算错误、方程末步错误、"
+                "缺步骤、应用题列式错误、单位缺失、移项错误，以及英语过去时、be 动词和冠词问题。"
+            ),
         }
+
+    def _grade_case(self, case: BenchmarkCase, assignment: Assignment) -> dict:
+        if case.subject == "英语":
+            result = self.grading_service._grade_english(case.ocr_text, assignment)
+            result.setdefault("ai_metadata", {})
+            result["ai_metadata"]["answer_sheet"] = {
+                "questions": [
+                    {
+                        "question_no": "1",
+                        "subject": "英语",
+                        "question_type": "作文",
+                        "student_answer": case.ocr_text,
+                        "score": result.get("score", 0),
+                        "full_score": result.get("full_score", case.expected_full_score),
+                        "is_correct": not result.get("weak_points"),
+                        "mistakes": result.get("errors", []),
+                        "weak_points": result.get("weak_points", []),
+                    }
+                ]
+            }
+            return result
+
+        return self.grading_service._grade_answer_sheet_from_text(
+            case.ocr_text,
+            assignment,
+            ["评测模式：使用标准 OCR 文本直接测试批改模块。"],
+        )
+
+
+def _assignment_for_case(case: BenchmarkCase) -> Assignment:
+    if case.subject == "英语":
+        return Assignment(
+            title="英语作文评测",
+            subject="英语",
+            question_type="作文",
+            question="Write a short passage about your weekend.",
+            standard_answer="",
+            full_score=case.expected_full_score,
+            knowledge_points=["一般过去时", "冠词", "be 动词", "句子结构"],
+        )
+    return Assignment(
+        title="AI 自动识别整张答题卡评测",
+        subject="自动识别",
+        question_type="答题卡",
+        question="整张答题卡",
+        standard_answer="",
+        full_score=case.expected_full_score,
+        knowledge_points=["整张答题卡", "数学过程批改"],
+    )
 
 
 def _wrong_question_numbers(result: dict) -> list[str]:
@@ -103,7 +137,32 @@ def _wrong_question_numbers(result: dict) -> list[str]:
 def _benchmark_cases() -> list[BenchmarkCase]:
     return [
         BenchmarkCase(
-            name="五题数学卷：两题计算/方程错误",
+            name="数学样例 1：三题全部正确",
+            subject="数学",
+            expected_score=100,
+            expected_full_score=100,
+            expected_wrong_questions=[],
+            ocr_text="""数学小测
+1. 计算：8×7-6
+8×7=56
+56-6=50
+答：50
+
+2. 解方程：4x+2=18
+4x=18-2
+4x=16
+x=4
+答：x=4
+
+3. 应用题：小明买了2支铅笔，每支3元，又买了1本笔记本4元，一共用了多少钱？
+2×3=6（元）
+6+4=10（元）
+答：一共用了10元。
+""",
+        ),
+        BenchmarkCase(
+            name="数学样例 2：第 3 题退位减法错误",
+            subject="数学",
             expected_score=84,
             expected_full_score=100,
             expected_wrong_questions=["3", "4"],
@@ -138,30 +197,8 @@ x=4
 """,
         ),
         BenchmarkCase(
-            name="三题数学卷：全部正确",
-            expected_score=100,
-            expected_full_score=100,
-            expected_wrong_questions=[],
-            ocr_text="""数学小测
-1. 计算：8×7-6
-8×7=56
-56-6=50
-答：50
-
-2. 解方程：4x+2=18
-4x=18-2
-4x=16
-x=4
-答：x=4
-
-3. 应用题：小明买了2支铅笔，每支3元，又买了1本笔记本4元，一共用了多少钱？
-2×3=6（元）
-6+4=10（元）
-答：一共用了10元。
-""",
-        ),
-        BenchmarkCase(
-            name="方程题：最后一步除法错误",
+            name="数学样例 3：方程末步除法错误",
+            subject="数学",
             expected_score=70,
             expected_full_score=100,
             expected_wrong_questions=["1"],
@@ -173,5 +210,87 @@ x=4
 x=5
 答：x=5
 """,
+        ),
+        BenchmarkCase(
+            name="数学样例 4：最终答案正确但缺少步骤",
+            subject="数学",
+            expected_score=80,
+            expected_full_score=100,
+            expected_wrong_questions=[],
+            tolerance=10,
+            ocr_text="""数学练习
+1. 解方程：2x+3=11
+答：x=4
+""",
+        ),
+        BenchmarkCase(
+            name="数学样例 5：应用题列式错误",
+            subject="数学",
+            expected_score=50,
+            expected_full_score=100,
+            expected_wrong_questions=["1"],
+            tolerance=15,
+            ocr_text="""数学练习
+1. 应用题：小明买了3支铅笔，每支2元，又买了1本笔记本5元，一共用了多少钱？
+3+2=5（元）
+5+5=10（元）
+答：一共用了10元。
+""",
+        ),
+        BenchmarkCase(
+            name="数学样例 6：应用题答案正确但单位缺失",
+            subject="数学",
+            expected_score=90,
+            expected_full_score=100,
+            expected_wrong_questions=[],
+            tolerance=10,
+            ocr_text="""数学练习
+1. 应用题：小明买了3支铅笔，每支2元，又买了1本笔记本5元，一共用了多少钱？
+3×2=6
+6+5=11
+答：一共用了11。
+""",
+        ),
+        BenchmarkCase(
+            name="数学样例 7：方程移项方向错误",
+            subject="数学",
+            expected_score=50,
+            expected_full_score=100,
+            expected_wrong_questions=["1"],
+            tolerance=15,
+            ocr_text="""数学练习
+1. 解方程：3x-5=10
+3x=10-5
+3x=5
+x=5/3
+答：x=5/3
+""",
+        ),
+        BenchmarkCase(
+            name="英语样例 8：一般过去时错误",
+            subject="英语",
+            expected_score=17,
+            expected_full_score=20,
+            expected_wrong_questions=["1"],
+            tolerance=2,
+            ocr_text="I go to the park with my friend. We play football. I was happy.",
+        ),
+        BenchmarkCase(
+            name="英语样例 9：缺少 be 动词",
+            subject="英语",
+            expected_score=17,
+            expected_full_score=20,
+            expected_wrong_questions=["1"],
+            tolerance=2,
+            ocr_text="I went to the park with my friend. We played football. I very happy.",
+        ),
+        BenchmarkCase(
+            name="英语样例 10：冠词使用错误",
+            subject="英语",
+            expected_score=18,
+            expected_full_score=20,
+            expected_wrong_questions=["1"],
+            tolerance=2,
+            ocr_text="I went to park with my friend. We played football. I was very happy.",
         ),
     ]

@@ -6,6 +6,7 @@ const state = {
   classes: [],
   submissions: [],
   evaluation: null,
+  runtime: null,
   selectedFile: null,
   selectedPreview: "",
   lastSubmissionId: null,
@@ -21,14 +22,16 @@ async function init() {
 }
 
 async function loadBaseData() {
-  const [students, assignments, classes] = await Promise.all([
+  const [students, assignments, classes, runtime] = await Promise.all([
     api("/api/students"),
     api("/api/assignments"),
     api("/api/classes"),
+    api("/api/runtime/status"),
   ]);
   state.students = students.data;
   state.assignments = assignments.data;
   state.classes = classes.data;
+  state.runtime = runtime.data;
 }
 
 async function api(path, options = {}) {
@@ -65,6 +68,7 @@ function setActiveNav(view) {
 
 function renderHome() {
   app.innerHTML = `
+    ${modeBanner()}
     <section class="hero">
       <div class="hero-copy">
         <span class="feature-tag">多学科 AI 智能作业批改系统</span>
@@ -114,6 +118,29 @@ function featureCard(title, text) {
   return `<article class="feature-card"><h3>${title}</h3><p>${text}</p></article>`;
 }
 
+function modeBanner() {
+  const runtime = state.runtime || {};
+  const stable = Boolean(runtime.demo_fixed_math_paper_ocr);
+  const title = stable ? "当前模式：比赛稳定演示模式" : "当前模式：真实识别模式";
+  const description = stable
+    ? "上传数学练习卷后，系统将使用固定 5 题结构化 OCR，保证比赛现场演示稳定。"
+    : "系统将调用 LLM 视觉 OCR / PaddleOCR / 云 OCR 识别真实图片，适合第二阶段泛化验证。";
+  return `
+    <section class="mode-banner ${stable ? "stable" : "real"}">
+      <div>
+        <strong>${title}</strong>
+        <p>${description}</p>
+      </div>
+      <div class="tag-list">
+        <span class="tag">OCR_PROVIDER=${escapeHtml(runtime.ocr_provider ?? "-")}</span>
+        <span class="tag">DEMO_FIXED_MATH_PAPER_OCR=${stable ? "true" : "false"}</span>
+        <span class="tag">LLM_ENABLED=${runtime.llm_enabled ? "true" : "false"}</span>
+        <span class="tag">ALLOW_MOCK_FOR_UPLOADED_IMAGES=${runtime.allow_mock_for_uploaded_images ? "true" : "false"}</span>
+      </div>
+    </section>
+  `;
+}
+
 function renderStudent() {
   const defaultStudent = state.students[0]?.id || "";
   const subjects = unique(state.assignments.map((item) => item.subject));
@@ -128,6 +155,7 @@ function renderStudent() {
         </div>
         <a class="btn ghost" href="#teacher">查看教师端</a>
       </div>
+      ${modeBanner()}
       <div class="upload-grid">
         <form id="uploadForm" class="panel form-grid">
           <div class="field">
@@ -521,12 +549,20 @@ async function renderTeacher(selectedId) {
       <div class="section-head">
         <div>
           <h2>教师工作台</h2>
-          <p>查看 AI 批改结果，进行确认、调整或返回学生。</p>
+          <p>查看 AI 批改结果，进行确认、调整或返回学生；教师修改会沉淀为二次标注数据，用于后续优化评分规则和模型提示词。</p>
         </div>
         <a class="btn secondary" href="#analysis">班级分析</a>
       </div>
+      ${teacherSummary(state.submissions)}
       <div class="teacher-layout">
-        <div class="table-wrap">
+        <div class="table-wrap teacher-table">
+          <div class="table-toolbar">
+            <div>
+              <strong>作业提交列表</strong>
+              <p class="muted">按最新提交排序，点击右侧按钮查看复核详情。</p>
+            </div>
+            <span class="tag">${state.submissions.length} 条记录</span>
+          </div>
           <table>
             <thead>
               <tr>
@@ -539,7 +575,7 @@ async function renderTeacher(selectedId) {
               </tr>
             </thead>
             <tbody>
-              ${state.submissions.map(submissionRow).join("")}
+              ${state.submissions.map((submission) => submissionRow(submission, selected)).join("")}
             </tbody>
           </table>
         </div>
@@ -560,51 +596,142 @@ async function renderTeacher(selectedId) {
   if (returnBtn) returnBtn.addEventListener("click", handleReturnSubmit);
 }
 
-function submissionRow(submission) {
-  const score = submission.effective_score ?? "-";
-  const full = submission.assignment.full_score;
+function teacherSummary(submissions) {
+  const total = submissions.length;
+  const pending = submissions.filter((item) => item.status.includes("待")).length;
+  const reviewed = submissions.filter((item) => item.status.includes("复核")).length;
+  const returned = submissions.filter((item) => item.status.includes("返回")).length;
+  const scored = submissions
+    .map((item) => {
+      const score = Number(item.effective_score ?? item.ai_score);
+      const full = Number(item.grading_full_score ?? item.assignment?.full_score);
+      return Number.isFinite(score) && Number.isFinite(full) && full > 0 ? (score / full) * 100 : null;
+    })
+    .filter((item) => item !== null);
+  const average = scored.length ? scored.reduce((sum, item) => sum + item, 0) / scored.length : 0;
   return `
-    <tr>
-      <td>${escapeHtml(submission.student.name)}</td>
+    <div class="teacher-summary mini-grid">
+      <div class="metric-card"><span>提交总数</span><strong>${total}</strong></div>
+      <div class="metric-card"><span>待处理</span><strong>${pending}</strong></div>
+      <div class="metric-card"><span>教师已复核</span><strong>${reviewed}</strong></div>
+      <div class="metric-card"><span>已返回学生</span><strong>${returned}</strong><small>平均得分率 ${formatScore(average)}%</small></div>
+    </div>
+  `;
+}
+
+function submissionRow(submission, selectedId) {
+  const score = submission.effective_score ?? "-";
+  const full = submission.grading_full_score ?? submission.assignment.full_score;
+  const isSelected = String(submission.id) === String(selectedId);
+  return `
+    <tr class="${isSelected ? "selected" : ""}">
+      <td><strong>${escapeHtml(submission.student.name)}</strong><span class="table-subtext">${escapeHtml(shortDate(submission.created_at))}</span></td>
       <td>${escapeHtml(submission.subject)}</td>
       <td>${escapeHtml(submission.question_type)}</td>
       <td><span class="status ${statusClassName(submission.status)}">${escapeHtml(submission.status)}</span></td>
       <td>${score === "-" ? "-" : `${score}/${full}`}</td>
-      <td><button class="btn ghost" type="button" data-open-submission="${submission.id}">查看详情</button></td>
+      <td><button class="btn ghost small" type="button" data-open-submission="${submission.id}">${isSelected ? "正在查看" : "查看详情"}</button></td>
     </tr>
   `;
 }
 
 function reviewPanel(submission) {
   const result = submission.grading_result || {};
+  const full = result.full_score ?? submission.grading_full_score ?? submission.assignment.full_score;
+  const aiScore = submission.ai_score ?? result.score ?? 0;
+  const teacherScore = submission.teacher_score ?? aiScore;
+  const comment = result.comment || teacherCommentFallback(submission);
+  const reviewNote =
+    result.review_note ||
+    "已查看 OCR 识别、逐题评分和错因归因；如调整分数，请在此说明依据，便于后续沉淀为二次标注样本。";
   return `
-    <div class="review-grid">
-      <div class="panel">
-        <h3>${escapeHtml(submission.student.name)} · ${escapeHtml(submission.assignment.title)}</h3>
-        ${scorePanel(submission)}
-        ${gradingDetail(submission)}
+    <aside class="teacher-detail">
+      <div class="panel review-overview">
+        <div class="section-head compact">
+          <div>
+            <h3>${escapeHtml(submission.student.name)} · ${escapeHtml(submission.assignment.title)}</h3>
+            <p class="muted">${escapeHtml(submission.subject)} · ${escapeHtml(submission.question_type)} · ${escapeHtml(submission.image_name || "上传图片")}</p>
+          </div>
+          <span class="status ${statusClassName(submission.status)}">${escapeHtml(submission.status)}</span>
+        </div>
+        <div class="review-score-strip">
+          <div><span>AI 分数</span><strong>${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full))}</strong></div>
+          <div><span>教师分数</span><strong>${escapeHtml(formatScore(teacherScore))} / ${escapeHtml(formatScore(full))}</strong></div>
+          <div><span>批改引擎</span><strong>${escapeHtml(result.ai_engine || "RuleEngine")}</strong></div>
+        </div>
+        ${teacherAiSummary(submission)}
       </div>
-      <form id="reviewForm" class="panel form-grid" data-submission-id="${submission.id}">
-        <h3>教师复核</h3>
+      <form id="reviewForm" class="panel review-form form-grid" data-submission-id="${submission.id}">
+        <div class="review-form-head">
+          <div>
+            <h3>教师复核</h3>
+            <p class="muted">确认 AI 批改，或根据课堂判断调整分数与评语。</p>
+          </div>
+          <span class="tag">二次标注闭环</span>
+        </div>
+        <div class="review-tip">
+          <strong>复核建议</strong>
+          <p>优先核对扣分题、最终答案和错因归因。保存后状态会变为“教师已复核”。</p>
+        </div>
         <div class="field">
           <label for="teacherScore">教师分数</label>
-          <input id="teacherScore" name="teacher_score" type="number" min="0" max="${submission.assignment.full_score}" step="0.5" value="${submission.teacher_score ?? submission.ai_score ?? 0}" />
+          <input id="teacherScore" name="teacher_score" type="number" min="0" max="${full}" step="0.5" value="${teacherScore}" />
+          <small>AI 建议：${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full))}，可按教师判断微调。</small>
         </div>
         <div class="field">
           <label for="teacherComment">评语</label>
-          <textarea id="teacherComment" name="comment">${escapeHtml(result.comment || "")}</textarea>
+          <textarea id="teacherComment" name="comment">${escapeHtml(comment)}</textarea>
         </div>
         <div class="field">
           <label for="reviewNote">复核备注</label>
-          <textarea id="reviewNote" name="review_note">${escapeHtml(result.review_note || "")}</textarea>
+          <textarea id="reviewNote" name="review_note">${escapeHtml(reviewNote)}</textarea>
         </div>
         <div class="button-row">
           <button class="btn" type="submit">确认复核</button>
           <button id="returnBtn" class="btn warn" type="button" data-submission-id="${submission.id}">返回学生</button>
         </div>
       </form>
+    </aside>
+  `;
+}
+
+function teacherAiSummary(submission) {
+  const result = submission.grading_result || {};
+  const questions = result.ai_metadata?.answer_sheet?.questions || [];
+  const reviewQuestions = questions.filter((question) => !question.is_correct).slice(0, 3);
+  const weakPoints = unique([...(result.weak_points || []), ...(result.common_weak_points || [])]).slice(0, 5);
+  const summary = result.process_analysis || result.content_analysis || result.comment || "AI 已完成批改，建议教师重点核对扣分题和评语是否符合课堂要求。";
+  return `
+    <div class="review-ai-card">
+      <strong>AI 结论摘要</strong>
+      <p>${escapeHtml(summary)}</p>
+      ${weakPoints.length ? `<div class="tag-list">${weakPoints.map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}</div>` : ""}
+      ${
+        reviewQuestions.length
+          ? `<div class="teacher-ai-list">${reviewQuestions
+              .map(
+                (question) => `
+                  <div>
+                    <span>第 ${escapeHtml(question.question_no || "-")} 题</span>
+                    <strong>${escapeHtml(formatScore(question.score))} / ${escapeHtml(formatScore(question.full_score))} · ${escapeHtml(questionStatus(question))}</strong>
+                    <p>${escapeHtml(question.process_analysis || question.comment || "建议复核该题扣分依据。")}</p>
+                  </div>
+                `,
+              )
+              .join("")}</div>`
+          : `<p class="muted">暂无明显错题，教师可快速确认后返回学生。</p>`
+      }
     </div>
   `;
+}
+
+function teacherCommentFallback(submission) {
+  const score = Number(submission.effective_score ?? submission.ai_score ?? 0);
+  const full = Number(submission.grading_result?.full_score ?? submission.grading_full_score ?? submission.assignment.full_score);
+  const rate = full > 0 ? score / full : 0;
+  if (rate >= 0.9) return "本次作业完成质量较高，步骤较清晰，建议继续保持规范书写和做后检查。";
+  if (rate >= 0.6) return "本次作业已经体现出一定思路，但仍有关键步骤或基础计算需要订正，建议重点复盘错题。";
+  return "本次作业暴露出基础知识和答题步骤上的薄弱点，建议先订正错题，再进行同类题巩固。";
 }
 
 async function handleReviewSubmit(event) {
@@ -894,9 +1021,9 @@ function evaluationPanel(evaluation) {
   return `
     <div class="mini-grid">
       <div class="metric-card"><span>样例数</span><strong>${summary.total_cases ?? 0}</strong></div>
-      <div class="metric-card"><span>通过率</span><strong>${percent(summary.pass_rate)}</strong></div>
-      <div class="metric-card"><span>错题识别</span><strong>${percent(summary.wrong_question_accuracy)}</strong></div>
-      <div class="metric-card"><span>平均误差</span><strong>${summary.average_score_error ?? 0}</strong></div>
+      <div class="metric-card"><span>评分误差合格率</span><strong>${percent(summary.score_within_tolerance_rate)}</strong></div>
+      <div class="metric-card"><span>错题识别准确率</span><strong>${percent(summary.wrong_question_accuracy)}</strong></div>
+      <div class="metric-card"><span>平均分差</span><strong>±${summary.average_score_error ?? 0}</strong></div>
     </div>
     <div class="bar-list" style="margin-top:12px">
       ${cases.map((item) => `
@@ -905,7 +1032,7 @@ function evaluationPanel(evaluation) {
             <strong>${escapeHtml(item.name)}</strong>
             <p class="muted">期望错题：${(item.expected_wrong_questions || []).join("、") || "无"} · 预测错题：${(item.predicted_wrong_questions || []).join("、") || "无"}</p>
           </div>
-          <span class="score-pill ${item.passed ? "ok" : "bad"}">${escapeHtml(item.actual_score)} / ${escapeHtml(item.expected_score)}</span>
+          <span class="score-pill ${item.passed ? "ok" : "bad"}">${escapeHtml(formatScore(item.actual_score))} / ${escapeHtml(formatScore(item.expected_score))}</span>
         </div>
       `).join("")}
     </div>
@@ -1055,12 +1182,14 @@ function statusClassName(status = "") {
 
 function questionStatus(question) {
   if (question.is_correct) return "正确";
+  if (question.status === "wrong") return "错误";
   if (question.status === "partial" || (Number(question.score) || 0) > 0) return "部分正确";
   return "错误";
 }
 
 function questionStatusClass(question) {
   if (question.is_correct) return "is-correct";
+  if (question.status === "wrong") return "is-wrong";
   if (question.status === "partial" || (Number(question.score) || 0) > 0) return "is-partial";
   return "is-wrong";
 }
@@ -1069,6 +1198,16 @@ function formatScore(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return value ?? "";
   return Math.abs(number - Math.round(number)) < 0.001 ? String(Math.round(number)) : number.toFixed(1);
+}
+
+function shortDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${month}/${day} ${hour}:${minute}`;
 }
 
 function parseJson(value) {
