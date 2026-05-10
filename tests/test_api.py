@@ -92,6 +92,10 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(bulk.status_code, 200)
         self.assertEqual(bulk.json()["data"]["count"], 1)
 
+        reset = self.client.post("/api/demo/reset")
+        self.assertEqual(reset.status_code, 200)
+        self.assertGreaterEqual(reset.json()["data"]["restored_demo_submissions"], 1)
+
     def test_answer_sheet_normalization(self):
         raw = {
             "score": 15,

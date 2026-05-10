@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -103,6 +103,32 @@ def runtime_status() -> dict:
 @app.get("/api/evaluation/grading")
 def grading_evaluation() -> dict:
     return {"data": evaluation_service.run_grading_benchmark()}
+
+
+@app.post("/api/demo/reset", dependencies=[Depends(require_api_token)])
+def reset_demo_data(request: Request, db: Session = Depends(get_db)) -> dict:
+    client_host = request.client.host if request.client else ""
+    is_local = client_host in {"127.0.0.1", "::1", "localhost"}
+    if not is_local and not settings.demo_fixed_math_paper_ocr:
+        raise HTTPException(status_code=403, detail="演示数据重置仅允许在本地或比赛演示模式下使用")
+
+    submission_count = db.query(Submission).count()
+    annotation_count = db.query(TeacherAnnotation).count()
+    grading_count = db.query(GradingResult).count()
+    for submission in db.query(Submission).all():
+        db.delete(submission)
+    db.commit()
+    seed_data(db)
+    restored = db.query(Submission).count()
+    return {
+        "data": {
+            "message": "演示数据已重置",
+            "deleted_submissions": submission_count,
+            "deleted_grading_results": grading_count,
+            "deleted_annotations": annotation_count,
+            "restored_demo_submissions": restored,
+        }
+    }
 
 
 @app.get("/api/students")

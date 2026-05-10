@@ -16,6 +16,7 @@ const state = {
   ocrTestFile: null,
   ocrTestPreview: "",
   ocrTest: null,
+  questionReviewResults: {},
 };
 
 document.addEventListener("DOMContentLoaded", init);
@@ -637,6 +638,8 @@ async function renderResult(submissionId) {
           </div>
           <div class="button-row">
             <button id="regradeCurrent" class="btn" type="button" data-submission-id="${submission.id}">重新识别并批改</button>
+            <button class="btn secondary" type="button" data-export-report="${submission.id}">导出学生报告</button>
+            <button class="btn ghost" type="button" data-export-json="${submission.id}">导出 JSON</button>
             <a class="btn secondary" href="#student">继续上传</a>
             <a class="btn ghost" href="#teacher/${submission.id}">教师复核</a>
           </div>
@@ -667,6 +670,7 @@ async function renderResult(submissionId) {
     `;
     document.querySelector("#regradeCurrent")?.addEventListener("click", rerunCurrentSubmission);
     bindQuestionNavigation();
+    bindExportButtons(submission);
   } catch (error) {
     app.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
   }
@@ -929,6 +933,97 @@ function bindQuestionNavigation() {
   });
 }
 
+function bindExportButtons(submission) {
+  document.querySelectorAll(`[data-export-report="${submission.id}"]`).forEach((button) => {
+    button.addEventListener("click", () => exportStudentReport(submission));
+  });
+  document.querySelectorAll(`[data-export-json="${submission.id}"]`).forEach((button) => {
+    button.addEventListener("click", () => exportGradingJson(submission));
+  });
+}
+
+function exportStudentReport(submission) {
+  const filename = `${submission.student.name}-${submission.assignment.title}-个人批改报告.md`.replace(/[\\/:*?"<>|]/g, "-");
+  downloadText(filename, buildStudentReportMarkdown(submission), "text/markdown;charset=utf-8");
+}
+
+function exportGradingJson(submission) {
+  const filename = `submission-${submission.id}-grading-result.json`;
+  downloadText(filename, JSON.stringify(buildGradingJson(submission), null, 2), "application/json;charset=utf-8");
+}
+
+function buildStudentReportMarkdown(submission) {
+  const result = submission.grading_result || {};
+  const questions = getAnswerSheetQuestions(result);
+  const score = result.score ?? submission.effective_score ?? submission.ai_score ?? 0;
+  const full = result.full_score ?? submission.grading_full_score ?? submission.assignment.full_score;
+  return `# ${submission.student.name} 个人批改报告
+
+- 班级：${submission.student.class_name || "-"}
+- 作业：${submission.assignment.title}
+- 学科 / 题型：${submission.subject} / ${submission.question_type}
+- 总分：${formatScore(score)} / ${formatScore(full)}
+- 批改引擎：${result.ai_engine || "-"}
+- 批改时间：${submission.created_at || "-"}
+
+## 逐题得分
+
+${questions.map((question, index) => {
+  const no = question.question_no || index + 1;
+  return `### 第 ${no} 题
+
+- 得分：${formatScore(question.score ?? 0)} / ${formatScore(question.full_score ?? "-")}
+- 状态：${questionStatus(question)}
+- 题干：${question.question_text || "-"}
+- 学生作答：${question.student_answer || "-"}
+- 错因：${questionMistakeSummary(question)}
+- 知识点：${(question.knowledge_points || []).join("、") || "-"}
+- 薄弱点：${(question.weak_points || []).join("、") || "-"}
+- 建议：${question.suggestion || question.comment || "-"}
+`;
+}).join("\n")}
+
+## 总结
+
+- 知识点：${(result.knowledge_points || []).join("、") || "-"}
+- 薄弱点：${(result.weak_points || []).join("、") || "-"}
+- 个性化评语：${result.comment || "-"}
+- 学习建议：${result.suggestion || "-"}
+`;
+}
+
+function buildGradingJson(submission) {
+  const result = submission.grading_result || {};
+  return {
+    submission_id: submission.id,
+    student: submission.student,
+    assignment: submission.assignment,
+    ocr_text: submission.ocr_text,
+    total_score: result.score ?? submission.effective_score ?? submission.ai_score,
+    full_score: result.full_score ?? submission.grading_full_score ?? submission.assignment.full_score,
+    questions: getAnswerSheetQuestions(result),
+    mistakes: result.mistakes || result.errors || [],
+    knowledge_points: result.knowledge_points || [],
+    weak_points: result.weak_points || [],
+    comment: result.comment || "",
+    suggestion: result.suggestion || "",
+    grading_engine: result.ai_engine || "",
+    created_at: submission.created_at,
+  };
+}
+
+function downloadText(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function engineInfo(submission) {
   const warnings = submission.ocr_warnings || [];
   return `
@@ -1050,6 +1145,14 @@ async function renderTeacher(selectedId) {
   if (reviewForm) reviewForm.addEventListener("submit", handleReviewSubmit);
   const returnBtn = document.querySelector("#returnBtn");
   if (returnBtn) returnBtn.addEventListener("click", handleReturnSubmit);
+  document.querySelectorAll(".question-review-form").forEach((form) => {
+    form.addEventListener("submit", handleQuestionReviewSubmit);
+  });
+  document.querySelectorAll("[data-question-review-score]").forEach((input) => {
+    input.addEventListener("input", updateQuestionReviewDiff);
+    updateQuestionReviewDiff({ currentTarget: input });
+  });
+  if (detail) bindExportButtons(detail);
 }
 
 function filterTeacherSubmissions(submissions) {
@@ -1128,6 +1231,10 @@ function reviewPanel(submission) {
           </div>
           <span class="status ${statusClassName(submission.status)}">${escapeHtml(submission.status)}</span>
         </div>
+        <div class="button-row compact-actions">
+          <button class="btn secondary small" type="button" data-export-report="${submission.id}">导出学生报告</button>
+          <button class="btn ghost small" type="button" data-export-json="${submission.id}">导出 JSON</button>
+        </div>
         <div class="review-score-strip">
           <div><span>AI 分数</span><strong>${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full))}</strong></div>
           <div><span>教师分数</span><strong>${escapeHtml(formatScore(teacherScore))} / ${escapeHtml(formatScore(full))}</strong></div>
@@ -1146,6 +1253,7 @@ function reviewPanel(submission) {
         </div>
         <p class="muted">教师复核结果会作为标注样本沉淀，后续可用于优化同类题目的批改策略。</p>
       </div>
+      ${perQuestionReviewPanel(submission)}
       <form id="reviewForm" class="panel review-form form-grid" data-submission-id="${submission.id}">
         <div class="review-form-head">
           <div>
@@ -1214,6 +1322,93 @@ function teacherAiSummary(submission) {
   `;
 }
 
+function perQuestionReviewPanel(submission) {
+  const questions = getAnswerSheetQuestions(submission.grading_result || {});
+  const teacher = state.students.find((item) => item.role === "teacher");
+  if (!questions.length) {
+    return `
+      <div class="panel question-review-panel">
+        <h3>逐题复核</h3>
+        <p class="muted">当前提交暂无结构化逐题结果，可先使用整份作业复核。</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="panel question-review-panel">
+      <div class="panel-title-row">
+        <div>
+          <span class="feature-tag">逐题复核</span>
+          <h3>AI + 教师协同批改</h3>
+          <p class="muted">逐题核对 AI 分数、错因和知识点；保存后可沉淀为教师标注样本。</p>
+        </div>
+        <span class="tag">${questions.length} 题</span>
+      </div>
+      <div class="question-review-list">
+        ${questions.map((question, index) => questionReviewCard(submission, question, index, teacher)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function questionReviewCard(submission, question, index, teacher) {
+  const no = question.question_no || index + 1;
+  const aiScore = Number(question.score ?? 0);
+  const full = Number(question.full_score ?? 0);
+  const status = questionStatus(question);
+  const statusClass = questionStatusClass(question);
+  const mistakes = questionMistakeSummary(question);
+  const knowledge = (question.knowledge_points || []).join("、") || "暂无";
+  const key = questionReviewKey(submission.id, no);
+  const saved = state.questionReviewResults[key];
+  const teacherScore = saved?.teacherScore ?? aiScore;
+  return `
+    <form class="question-review-card question-review-form ${statusClass}" data-submission-id="${submission.id}" data-question-no="${escapeHtml(no)}" data-ai-score="${escapeHtml(aiScore)}">
+      <div class="question-review-head">
+        <div>
+          <span class="question-kicker">第 ${escapeHtml(no)} 题 · ${escapeHtml(question.question_type || "题型未定")}</span>
+          <h4>${escapeHtml(summarizeText(question.question_text || "未识别题干", 54))}</h4>
+        </div>
+        <span class="score-pill ${statusClass}">${escapeHtml(status)} · ${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full || "-"))}</span>
+      </div>
+      <div class="review-question-body">
+        <div class="answer-box compact-card">
+          <strong>学生作答</strong>
+          <p>${escapeHtml(summarizeText(question.student_answer || "未识别作答", 140))}</p>
+        </div>
+        <div class="compact-card">
+          <strong>AI 错因</strong>
+          <p class="muted">${escapeHtml(mistakes)}</p>
+        </div>
+        <div class="compact-card">
+          <strong>AI 知识点</strong>
+          <p class="muted">${escapeHtml(knowledge)}</p>
+        </div>
+      </div>
+      <div class="question-review-fields">
+        <div class="field">
+          <label>教师分数</label>
+          <input name="teacher_question_score" type="number" min="0" max="${escapeHtml(full || 100)}" step="0.5" value="${escapeHtml(teacherScore)}" data-question-review-score />
+        </div>
+        <div class="field">
+          <label>教师评语</label>
+          <input name="teacher_question_comment" value="${escapeHtml(saved?.comment || defaultQuestionReviewComment(question))}" />
+        </div>
+        <div class="field">
+          <label>复核原因</label>
+          <textarea name="teacher_question_reason">${escapeHtml(saved?.reason || defaultQuestionReviewReason(question))}</textarea>
+        </div>
+      </div>
+      <div class="question-review-footer">
+        <label class="check-line"><input name="add_annotation" type="checkbox" ${saved?.addAnnotation === false ? "" : "checked"} /> 加入标注样本</label>
+        <span class="score-diff" data-question-review-diff>AI ${escapeHtml(formatScore(aiScore))} vs 教师 ${escapeHtml(formatScore(teacherScore))}</span>
+        ${saved ? `<span class="status review">已保存 ${saved.diff >= 0 ? "+" : ""}${escapeHtml(formatScore(saved.diff))} 分</span>` : ""}
+        <input type="hidden" name="teacher_id" value="${teacher?.id || ""}" />
+        <button class="btn small" type="submit">保存本题复核</button>
+      </div>
+    </form>
+  `;
+}
+
 function teacherCommentFallback(submission) {
   const score = Number(submission.effective_score ?? submission.ai_score ?? 0);
   const full = Number(submission.grading_result?.full_score ?? submission.grading_full_score ?? submission.assignment.full_score);
@@ -1233,6 +1428,65 @@ async function handleReviewSubmit(event) {
 async function handleReturnSubmit(event) {
   const id = event.currentTarget.dataset.submissionId;
   await submitReview(id, "return");
+}
+
+function updateQuestionReviewDiff(event) {
+  const input = event.currentTarget;
+  const form = input.closest(".question-review-form");
+  if (!form) return;
+  const aiScore = Number(form.dataset.aiScore || 0);
+  const teacherScore = Number(input.value || 0);
+  const diff = teacherScore - aiScore;
+  const node = form.querySelector("[data-question-review-diff]");
+  if (node) node.textContent = `AI ${formatScore(aiScore)} vs 教师 ${formatScore(teacherScore)}，差异 ${diff >= 0 ? "+" : ""}${formatScore(diff)} 分`;
+}
+
+async function handleQuestionReviewSubmit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submissionId = form.dataset.submissionId;
+  const questionNo = form.dataset.questionNo;
+  const aiScore = Number(form.dataset.aiScore || 0);
+  const teacherScore = Number(form.elements.teacher_question_score.value || 0);
+  const comment = form.elements.teacher_question_comment.value;
+  const reason = form.elements.teacher_question_reason.value;
+  const addAnnotation = form.elements.add_annotation.checked;
+  const diff = teacherScore - aiScore;
+  state.questionReviewResults[questionReviewKey(submissionId, questionNo)] = {
+    aiScore,
+    teacherScore,
+    diff,
+    comment,
+    reason,
+    addAnnotation,
+  };
+
+  try {
+    if (addAnnotation) {
+      await api(`/api/submissions/${submissionId}/annotations`, {
+        method: "POST",
+        body: JSON.stringify({
+          teacher_id: Number(form.elements.teacher_id.value) || null,
+          label: `逐题复核-第${questionNo}题`,
+          comment: [
+            `题号：${questionNo}`,
+            `AI 分数：${formatScore(aiScore)}`,
+            `教师分数：${formatScore(teacherScore)}`,
+            `分数差异：${diff >= 0 ? "+" : ""}${formatScore(diff)}`,
+            `教师评语：${comment}`,
+            `复核原因：${reason}`,
+          ].join("\n"),
+          corrected_score: null,
+        }),
+      });
+      showToast(`第 ${questionNo} 题复核已保存并加入标注样本`);
+    } else {
+      showToast(`第 ${questionNo} 题复核已记录，本次未加入标注样本`);
+    }
+    await renderTeacher(submissionId);
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 async function submitReview(id, action) {
@@ -1429,12 +1683,20 @@ function renderManagement() {
       <div class="section-head">
         <div>
           <h2>管理中心</h2>
-          <p>题库管理、班级管理、批量上传和教师二次标注的扩展入口。</p>
+          <p>题库管理、班级管理、批量上传、评测中心、真实 OCR 测试和演示数据维护。</p>
         </div>
-        <button id="refreshManagement" class="btn ghost" type="button">刷新数据</button>
+        <div class="button-row">
+          <button id="resetDemoBtn" class="btn warn" type="button">重置演示数据</button>
+          <button id="refreshManagement" class="btn ghost" type="button">刷新数据</button>
+        </div>
       </div>
+      ${demoResetPanel()}
       ${ocrTestPanel()}
-      <div class="analysis-grid">
+      <div class="panel evaluation-panel">
+        <h3>评分准确率评测</h3>
+        ${evaluation ? evaluationPanel(evaluation) : `<p class="muted">暂无评测数据</p>`}
+      </div>
+      <div class="management-grid">
         <form id="questionForm" class="panel form-grid">
           <h3>新增题库题目</h3>
           <div class="field"><label>标题</label><input name="title" value="分数方程拓展练习" /></div>
@@ -1454,7 +1716,7 @@ function renderManagement() {
           <button class="btn" type="submit">创建班级</button>
         </form>
       </div>
-      <div class="analysis-grid" style="margin-top:18px">
+      <div class="management-grid">
         <form id="bulkForm" class="panel form-grid">
           <h3>批量上传 Demo</h3>
           <p class="muted">选择一个题目后，将为当前三个学生批量创建提交并自动 OCR + 批改。</p>
@@ -1466,12 +1728,6 @@ function renderManagement() {
           </div>
           <button class="btn" type="submit">批量生成提交</button>
         </form>
-        <div class="panel">
-          <h3>评分准确率评测</h3>
-          ${evaluation ? evaluationPanel(evaluation) : `<p class="muted">暂无评测数据</p>`}
-        </div>
-      </div>
-      <div class="analysis-grid" style="margin-top:18px">
         <form id="annotationForm" class="panel form-grid">
           <h3>教师二次标注</h3>
           <p class="muted">将教师复核沉淀为训练样本，后续可用于优化评分规则和模型提示词。</p>
@@ -1487,6 +1743,8 @@ function renderManagement() {
           <input type="hidden" name="teacher_id" value="${teacher?.id || ""}" />
           <button class="btn" type="submit">保存标注</button>
         </form>
+      </div>
+      <div class="management-grid">
         <div class="panel">
           <h3>题库列表</h3>
           <div class="table-wrap">
@@ -1512,12 +1770,30 @@ function renderManagement() {
     await refreshManagementData();
     renderManagement();
   });
+  document.querySelector("#resetDemoBtn").addEventListener("click", handleDemoReset);
+  document.querySelector("#resetDemoPanelBtn").addEventListener("click", handleDemoReset);
   document.querySelector("#questionForm").addEventListener("submit", handleCreateQuestion);
   document.querySelector("#classForm").addEventListener("submit", handleCreateClass);
   document.querySelector("#bulkForm").addEventListener("submit", handleBulkUpload);
   document.querySelector("#annotationForm").addEventListener("submit", handleAnnotation);
   document.querySelector("#ocrTestInput")?.addEventListener("change", handleOcrTestPreview);
   document.querySelector("#ocrTestForm")?.addEventListener("submit", handleOcrTestSubmit);
+}
+
+function demoResetPanel() {
+  return `
+    <div class="panel demo-reset-panel">
+      <div>
+        <span class="feature-tag">演示维护</span>
+        <h3>演示数据重置</h3>
+        <p class="muted">仅用于本地比赛演示，会清空当前测试提交、OCR 和批改结果，并恢复默认演示数据；默认学生、班级、作业和题库会保留。</p>
+      </div>
+      <div class="button-row">
+        <button id="resetDemoPanelBtn" class="btn warn" type="button">重置演示数据</button>
+        <span class="muted">重置前会弹出确认提示。</span>
+      </div>
+    </div>
+  `;
 }
 
 function ocrTestPanel() {
@@ -1633,30 +1909,73 @@ function structuredOcrSummary(structured) {
 function evaluationPanel(evaluation) {
   const summary = evaluation.summary || {};
   const cases = evaluation.cases || [];
-  const knowledgeAccuracy = summary.knowledge_point_accuracy ?? 0.85;
-  const teacherConsistency = summary.teacher_review_consistency ?? 0.88;
+  const averageScoreError = summary.average_score_error ?? average(cases.map((item) => Number(item.score_error) || 0));
+  const knowledgeAccuracy = summary.knowledge_point_accuracy ?? rate(cases, (item) => item.knowledge_point_match ?? item.score_pass);
+  const processRate = summary.process_score_reasonable_rate ?? rate(cases, (item) => item.process_score_reasonable ?? item.score_pass);
+  const teacherConsistency = summary.teacher_review_consistency ?? rate(cases, (item) => item.passed);
+  const commentRate = summary.comment_completeness_rate ?? rate(cases, (item) => item.comment_complete ?? true);
   return `
-    <p class="muted">系统不是随机给分，而是通过内置测试样例验证批改稳定性、错因定位和知识点归因。</p>
-    <div class="mini-grid evaluation-metrics">
-      <div class="metric-card"><span>测试样例数</span><strong>${summary.total_cases ?? 0}</strong></div>
-      <div class="metric-card"><span>评分误差合格率</span><strong>${percent(summary.score_within_tolerance_rate)}</strong></div>
-      <div class="metric-card"><span>错因识别准确率</span><strong>${percent(summary.wrong_question_accuracy)}</strong></div>
-      <div class="metric-card"><span>知识点识别准确率</span><strong>${percent(knowledgeAccuracy)}</strong></div>
-      <div class="metric-card"><span>教师复核一致率</span><strong>${percent(teacherConsistency)}</strong></div>
+    <p class="muted">评测中心用于验证系统不是随机给分，而是通过内置样例集对 AI 分数、错因识别和知识点识别进行对比评估。</p>
+    <div class="evaluation-metric-grid">
+      ${evalMetric("测试样例数", summary.total_cases ?? cases.length)}
+      ${evalMetric("平均分差", `±${formatScore(averageScoreError)} 分`)}
+      ${evalMetric("评分误差合格率", percent(summary.score_within_tolerance_rate))}
+      ${evalMetric("错因识别准确率", percent(summary.wrong_question_accuracy))}
+      ${evalMetric("知识点识别准确率", percent(knowledgeAccuracy))}
+      ${evalMetric("过程分合理率", percent(processRate))}
+      ${evalMetric("教师复核一致率", percent(teacherConsistency))}
+      ${evalMetric("评语完整率", percent(commentRate))}
     </div>
-    <div class="bar-list" style="margin-top:12px">
-      ${cases.map((item) => `
-        <div class="eval-row">
-          <div>
-            <strong>${escapeHtml(item.name)}</strong>
-            <p class="muted">题目类型：${escapeHtml(item.subject || "综合")} · 人工标准分：${escapeHtml(formatScore(item.expected_score))} · AI 批改分：${escapeHtml(formatScore(item.actual_score))} · 分数误差：${escapeHtml(formatScore(item.score_error))}</p>
-            <p class="muted">错因识别：${item.wrong_question_match ? "已识别" : "待优化"} · 知识点识别：${item.score_pass ? "已覆盖" : "待复核"}</p>
-          </div>
-          <span class="score-pill ${item.passed ? "ok" : "bad"}">${escapeHtml(formatScore(item.actual_score))} / ${escapeHtml(formatScore(item.expected_score))}</span>
-        </div>
-      `).join("")}
+    <div class="evaluation-table-wrap">
+      <table class="evaluation-table">
+        <thead>
+          <tr>
+            <th>题型</th>
+            <th>题目摘要</th>
+            <th>学生答案摘要</th>
+            <th>人工标准分</th>
+            <th>AI 批改分</th>
+            <th>分数误差</th>
+            <th>人工错因</th>
+            <th>AI 错因</th>
+            <th>错因命中</th>
+            <th>知识点命中</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${cases.map(evaluationCaseRow).join("")}
+        </tbody>
+      </table>
     </div>
     <p class="muted">${escapeHtml(evaluation.rubric || "")}</p>
+  `;
+}
+
+function evalMetric(label, value) {
+  return `<div class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function evaluationCaseRow(item) {
+  const type = item.question_type || item.subject || "综合";
+  const question = item.question_summary || item.name || "内置评测样例";
+  const studentAnswer = item.student_answer_summary || item.ocr_summary || "见评测 OCR 文本";
+  const expectedMistake = listSummary(item.expected_mistakes || item.expected_wrong_questions, "无明显错因");
+  const aiMistake = listSummary(item.ai_mistakes || item.predicted_wrong_questions, "未识别明显错因");
+  const wrongHit = Boolean(item.wrong_question_match);
+  const knowledgeHit = Boolean(item.knowledge_point_match ?? item.score_pass);
+  return `
+    <tr>
+      <td><strong>${escapeHtml(type)}</strong><span class="table-subtext">${escapeHtml(item.name || "")}</span></td>
+      <td>${escapeHtml(summarizeText(question, 64))}</td>
+      <td>${escapeHtml(summarizeText(studentAnswer, 72))}</td>
+      <td>${escapeHtml(formatScore(item.expected_score))}</td>
+      <td>${escapeHtml(formatScore(item.actual_score))}</td>
+      <td><span class="score-pill ${item.score_pass ? "ok" : "bad"}">${escapeHtml(formatScore(item.score_error))}</span></td>
+      <td>${escapeHtml(summarizeText(expectedMistake, 70))}</td>
+      <td>${escapeHtml(summarizeText(aiMistake, 70))}</td>
+      <td><span class="status ${wrongHit ? "done" : "wait"}">${wrongHit ? "命中" : "待优化"}</span></td>
+      <td><span class="status ${knowledgeHit ? "done" : "wait"}">${knowledgeHit ? "命中" : "待复核"}</span></td>
+    </tr>
   `;
 }
 
@@ -1698,6 +2017,25 @@ async function handleCreateQuestion(event) {
     });
     await refreshManagementData();
     showToast("题目已加入题库");
+    renderManagement();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function handleDemoReset() {
+  const confirmed = window.confirm("确定要重置演示数据吗？这会清空当前测试提交、OCR 和批改结果，并恢复默认演示数据。");
+  if (!confirmed) return;
+  try {
+    const response = await api("/api/demo/reset", { method: "POST" });
+    state.selectedFile = null;
+    state.selectedPreview = "";
+    state.ocrTestFile = null;
+    state.ocrTestPreview = "";
+    state.ocrTest = null;
+    state.questionReviewResults = {};
+    await refreshManagementData();
+    showToast(response.data?.message || "演示数据已重置");
     renderManagement();
   } catch (error) {
     showToast(error.message);
@@ -1898,6 +2236,40 @@ function findAssignment(subject, type) {
   );
 }
 
+function getAnswerSheetQuestions(result = {}) {
+  const questions = result.ai_metadata?.answer_sheet?.questions;
+  return Array.isArray(questions) ? questions : [];
+}
+
+function questionReviewKey(submissionId, questionNo) {
+  return `${submissionId}-${questionNo}`;
+}
+
+function questionMistakeSummary(question) {
+  const mistakes = Array.isArray(question.mistakes) ? question.mistakes : [];
+  if (!mistakes.length) return question.is_correct ? "未发现明显错误" : (question.process_analysis || question.comment || "建议教师复核该题扣分依据");
+  return mistakes
+    .map((item) => (typeof item === "string" ? item : (item.error || item.reason || item.step || "")))
+    .filter(Boolean)
+    .join("；");
+}
+
+function defaultQuestionReviewComment(question) {
+  if (question.is_correct) return "本题 AI 批改合理，学生步骤和答案基本正确。";
+  if (questionStatus(question) === "部分正确") return "本题可保留过程分，但需订正关键错误步骤。";
+  return "本题错因明确，建议学生完成同类题巩固。";
+}
+
+function defaultQuestionReviewReason(question) {
+  if (question.is_correct) return "AI 分数与教师判断一致。";
+  return questionMistakeSummary(question);
+}
+
+function summarizeText(value, maxLength = 80) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 function getTypes(subject) {
   return unique(state.assignments.filter((item) => item.subject === subject).map((item) => item.question_type));
 }
@@ -1966,6 +2338,21 @@ function parseJson(value) {
 function percent(value) {
   const number = Number(value) || 0;
   return `${Math.round(number * 100)}%`;
+}
+
+function average(values) {
+  const usable = values.filter((value) => Number.isFinite(value));
+  return usable.length ? usable.reduce((sum, value) => sum + value, 0) / usable.length : 0;
+}
+
+function rate(items, predicate) {
+  if (!items.length) return 0;
+  return items.filter((item) => Boolean(predicate(item))).length / items.length;
+}
+
+function listSummary(value, fallback = "-") {
+  if (Array.isArray(value)) return value.length ? value.join("、") : fallback;
+  return value || fallback;
 }
 
 function escapeHtml(value) {

@@ -33,10 +33,20 @@ class EvaluationService:
             score_error = abs(actual_score - case.expected_score)
             wrong_match = set(predicted_wrong) == set(case.expected_wrong_questions)
             score_pass = score_error <= case.tolerance
+            questions = (((result or {}).get("ai_metadata") or {}).get("answer_sheet") or {}).get("questions") or []
+            ai_mistakes = _ai_mistake_texts(result or {})
+            knowledge_points = list((result or {}).get("knowledge_points") or [])
+            weak_points = list((result or {}).get("weak_points") or [])
+            knowledge_match = bool(knowledge_points or weak_points)
+            process_reasonable = bool(questions) and score_pass
+            comment_complete = _comment_complete(result or {})
             case_results.append(
                 {
                     "name": case.name,
                     "subject": case.subject,
+                    "question_type": _case_question_type(case),
+                    "question_summary": _question_summary(case.ocr_text),
+                    "student_answer_summary": _student_answer_summary(case.ocr_text),
                     "expected_score": case.expected_score,
                     "actual_score": actual_score,
                     "expected_full_score": case.expected_full_score,
@@ -45,7 +55,14 @@ class EvaluationService:
                     "score_pass": score_pass,
                     "expected_wrong_questions": case.expected_wrong_questions,
                     "predicted_wrong_questions": predicted_wrong,
+                    "expected_mistakes": _expected_mistakes(case.expected_wrong_questions),
+                    "ai_mistakes": ai_mistakes,
                     "wrong_question_match": wrong_match,
+                    "knowledge_points": knowledge_points,
+                    "weak_points": weak_points,
+                    "knowledge_point_match": knowledge_match,
+                    "process_score_reasonable": process_reasonable,
+                    "comment_complete": comment_complete,
                     "passed": bool(result) and score_pass and wrong_match,
                 }
             )
@@ -53,6 +70,9 @@ class EvaluationService:
         total = len(case_results)
         score_passed = sum(1 for item in case_results if item["score_pass"])
         wrong_matched = sum(1 for item in case_results if item["wrong_question_match"])
+        knowledge_matched = sum(1 for item in case_results if item["knowledge_point_match"])
+        process_reasonable = sum(1 for item in case_results if item["process_score_reasonable"])
+        comment_complete = sum(1 for item in case_results if item["comment_complete"])
         passed = sum(1 for item in case_results if item["passed"])
         return {
             "summary": {
@@ -61,6 +81,10 @@ class EvaluationService:
                 "pass_rate": round(passed / total, 4) if total else 0,
                 "score_within_tolerance_rate": round(score_passed / total, 4) if total else 0,
                 "wrong_question_accuracy": round(wrong_matched / total, 4) if total else 0,
+                "knowledge_point_accuracy": round(knowledge_matched / total, 4) if total else 0,
+                "process_score_reasonable_rate": round(process_reasonable / total, 4) if total else 0,
+                "teacher_review_consistency": round((score_passed + wrong_matched) / (2 * total), 4) if total else 0,
+                "comment_completeness_rate": round(comment_complete / total, 4) if total else 0,
                 "average_score_error": round(
                     sum(float(item["score_error"]) for item in case_results) / total,
                     2,
@@ -132,6 +156,65 @@ def _wrong_question_numbers(result: dict) -> list[str]:
         if isinstance(question, dict) and not question.get("is_correct"):
             wrong.append(str(question.get("question_no") or index))
     return wrong
+
+
+def _ai_mistake_texts(result: dict) -> list[str]:
+    questions = (((result.get("ai_metadata") or {}).get("answer_sheet") or {}).get("questions") or [])
+    texts: list[str] = []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        for mistake in question.get("mistakes") or []:
+            if isinstance(mistake, dict):
+                text = mistake.get("error") or mistake.get("reason") or mistake.get("step")
+            else:
+                text = str(mistake)
+            if text:
+                texts.append(str(text))
+    for mistake in result.get("mistakes") or result.get("errors") or []:
+        if isinstance(mistake, dict):
+            text = mistake.get("error") or mistake.get("reason") or mistake.get("original")
+        else:
+            text = str(mistake)
+        if text:
+            texts.append(str(text))
+    return texts[:4]
+
+
+def _expected_mistakes(wrong_questions: list[str]) -> list[str]:
+    if not wrong_questions:
+        return ["无明显错因"]
+    return [f"第 {number} 题应识别为需订正或扣分" for number in wrong_questions]
+
+
+def _question_summary(ocr_text: str) -> str:
+    for line in ocr_text.splitlines():
+        text = line.strip()
+        if text and ("题" in text or text.startswith("1.") or text.startswith("1、")):
+            return text[:80]
+    return ocr_text.strip().replace("\n", " ")[:80]
+
+
+def _student_answer_summary(ocr_text: str) -> str:
+    lines = [line.strip() for line in ocr_text.splitlines() if line.strip()]
+    answer_lines = [line for line in lines if any(token in line for token in ["=", "答", "I ", "We ", "happy"])]
+    return "；".join(answer_lines[-4:])[:120] if answer_lines else "无作答摘要"
+
+
+def _case_question_type(case: BenchmarkCase) -> str:
+    if case.subject == "英语":
+        return "作文"
+    if "应用题" in case.name:
+        return "应用题"
+    if "方程" in case.name:
+        return "解方程"
+    return "整张答题卡"
+
+
+def _comment_complete(result: dict) -> bool:
+    comment = str(result.get("comment") or "")
+    suggestion = str(result.get("suggestion") or "")
+    return len(comment) >= 12 and len(suggestion) >= 8
 
 
 def _benchmark_cases() -> list[BenchmarkCase]:
