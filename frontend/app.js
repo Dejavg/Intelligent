@@ -7,6 +7,7 @@ const state = {
   submissions: [],
   evaluation: null,
   runtime: null,
+  teacherFilter: "全部",
   selectedFile: null,
   selectedPreview: "",
   lastSubmissionId: null,
@@ -69,35 +70,33 @@ function setActiveNav(view) {
 function renderHome() {
   app.innerHTML = `
     ${modeBanner()}
-    <section class="hero">
+    <section class="hero product-hero">
       <div class="hero-copy">
-        <span class="feature-tag">多学科 AI 智能作业批改系统</span>
+        <span class="feature-tag">比赛级完整 Demo · 多学科智能批改</span>
         <h1>希沃智评</h1>
-        <p>面向学生和教师的作业批改 Demo，覆盖图片上传、模拟 OCR、数学过程分、英语/语文主观题评价、个性化评语、知识点薄弱分析和班级学情报告。</p>
+        <p>面向课堂作业场景的 AI 智能批改系统，支持整张答题卡上传、结构化 OCR、逐题过程分、错因归因、个性化评语和班级学情报告。</p>
         <div class="hero-actions">
-          <a class="btn" href="#student">进入 Demo</a>
-          <a class="btn secondary" href="#teacher">教师工作台</a>
+          <a class="btn xl" href="#student">进入稳定演示</a>
+          <a class="btn secondary xl" href="#teacher">查看教师闭环</a>
+        </div>
+        <div class="hero-proof">
+          <span>固定 5 题数学卷</span>
+          <span>43 / 50 稳定输出</span>
+          <span>第 3、4 题可解释扣分</span>
         </div>
       </div>
-      <div class="hero-visual" aria-label="智能批改示意">
-        <div class="paper-stack">
-          <div class="tag-list">
-            <span class="tag">OCR</span>
-            <span class="tag">过程分</span>
-            <span class="tag">错因归因</span>
-          </div>
-          <div class="paper-lines">
-            <div class="paper-line"></div>
-            <div class="paper-line mid"></div>
-            <div class="paper-line"></div>
-            <div class="paper-line short"></div>
-            <div class="paper-line mid"></div>
-          </div>
-          <div class="score-badge">AI 评</div>
-        </div>
+      <div class="hero-preview" aria-label="AI 批改结果预览">
+        ${heroPreviewCard()}
       </div>
     </section>
-    <section>
+    <section class="flow-section">
+      <div class="flow-card">
+        ${flowStep("01", "上传试卷", "学生上传完整答题卡图片，保留题干与作答过程。")}
+        ${flowStep("02", "AI 逐题批改", "OCR 结构化识别后，按题目拆分给分并定位错误步骤。")}
+        ${flowStep("03", "生成学情报告", "教师端汇总正确率、薄弱点和后续教学建议。")}
+      </div>
+    </section>
+    <section class="capability-section">
       <div class="section-head">
         <div>
           <h2>核心能力</h2>
@@ -105,17 +104,66 @@ function renderHome() {
         </div>
       </div>
       <div class="feature-grid">
-        ${featureCard("作业图片上传", "支持 jpg、png、jpeg，上传后展示预览并创建提交记录。")}
-        ${featureCard("模拟 OCR 接口", "保留可替换接口，后续可接 PaddleOCR、Mathpix 或云 OCR。")}
-        ${featureCard("过程化评分", "数学按思路、方法、计算、答案拆分给分，支持部分分。")}
-        ${featureCard("班级学情报告", "统计平均分、正确率、错题分布和高频薄弱知识点。")}
+        ${featureCard("整卷上传", "支持完整答题卡图片，保留题目、步骤和最终答案。")}
+        ${featureCard("结构化 OCR", "固定演示卷稳定输出 5 道题结构，真实 OCR 可按配置切换。")}
+        ${featureCard("过程分评分", "不是只看结果，能解释哪一步正确、哪一步扣分。")}
+        ${featureCard("教师复核闭环", "教师可调整分数和评语，沉淀二次标注样本。")}
       </div>
     </section>
   `;
 }
 
 function featureCard(title, text) {
-  return `<article class="feature-card"><h3>${title}</h3><p>${text}</p></article>`;
+  return `<article class="feature-card"><span class="card-mark"></span><h3>${title}</h3><p>${text}</p></article>`;
+}
+
+function heroPreviewCard() {
+  return `
+    <div class="ai-preview-card">
+      <div class="preview-head">
+        <div>
+          <span class="feature-tag">AI 批改结果预览</span>
+          <h3>数学练习卷</h3>
+        </div>
+        <span class="status done">AI 已批改</span>
+      </div>
+      <div class="preview-score">
+        <strong>43</strong><span>/ 50</span>
+      </div>
+      <div class="preview-stats">
+        <div><span>正确题</span><strong>3</strong></div>
+        <div><span>部分正确</span><strong>1</strong></div>
+        <div><span>需订正</span><strong>2</strong></div>
+      </div>
+      <div class="preview-question is-wrong">
+        <span>第 3 题 · 计算题</span>
+        <strong>90 - 28 = 72</strong>
+        <p>退位减法错误，正确结果为 62。</p>
+      </div>
+      <div class="preview-question is-partial">
+        <span>第 4 题 · 解方程</span>
+        <strong>3x = 15 推出 x = 4</strong>
+        <p>前两步正确，最后除以 3 错误，应为 x = 5。</p>
+      </div>
+      <div class="tag-list">
+        <span class="tag">薄弱点：整数减法</span>
+        <span class="tag">方程求解</span>
+        <span class="tag">除法计算</span>
+      </div>
+    </div>
+  `;
+}
+
+function flowStep(no, title, text) {
+  return `
+    <article class="flow-step">
+      <span>${no}</span>
+      <div>
+        <strong>${title}</strong>
+        <p>${text}</p>
+      </div>
+    </article>
+  `;
 }
 
 function modeBanner() {
@@ -132,10 +180,10 @@ function modeBanner() {
         <p>${description}</p>
       </div>
       <div class="tag-list">
-        <span class="tag">OCR_PROVIDER=${escapeHtml(runtime.ocr_provider ?? "-")}</span>
-        <span class="tag">DEMO_FIXED_MATH_PAPER_OCR=${stable ? "true" : "false"}</span>
-        <span class="tag">LLM_ENABLED=${runtime.llm_enabled ? "true" : "false"}</span>
-        <span class="tag">ALLOW_MOCK_FOR_UPLOADED_IMAGES=${runtime.allow_mock_for_uploaded_images ? "true" : "false"}</span>
+        <span class="tag">${stable ? "稳定 Demo OCR" : "真实识别链路"}</span>
+        <span class="tag">逐题批改</span>
+        <span class="tag">过程分</span>
+        <span class="tag">教师复核</span>
       </div>
     </section>
   `;
@@ -156,48 +204,49 @@ function renderStudent() {
         <a class="btn ghost" href="#teacher">查看教师端</a>
       </div>
       ${modeBanner()}
+      ${uploadSteps()}
       <div class="upload-grid">
-        <form id="uploadForm" class="panel form-grid">
-          <div class="field">
-            <label for="studentSelect">学生</label>
-            <select id="studentSelect">${state.students.map((student) => `<option value="${student.id}" ${student.id === defaultStudent ? "selected" : ""}>${student.name} · ${student.class_name}</option>`).join("")}</select>
-          </div>
-          <div class="field">
-            <label for="subjectSelect">学科 / 模式</label>
-            <select id="subjectSelect">${subjects.map((subject) => `<option value="${subject}" ${subject === defaultSubject ? "selected" : ""}>${subject}</option>`).join("")}</select>
+        <form id="uploadForm" class="panel form-grid upload-panel">
+          <div class="form-two-col">
+            <div class="field">
+              <label for="studentSelect">学生</label>
+              <select id="studentSelect">${state.students.map((student) => `<option value="${student.id}" ${student.id === defaultStudent ? "selected" : ""}>${student.name} · ${student.class_name}</option>`).join("")}</select>
+            </div>
+            <div class="field">
+              <label for="subjectSelect">学科 / 模式</label>
+              <select id="subjectSelect">${subjects.map((subject) => `<option value="${subject}" ${subject === defaultSubject ? "selected" : ""}>${subject}</option>`).join("")}</select>
+            </div>
           </div>
           <div class="field">
             <label for="typeSelect">题型</label>
             <select id="typeSelect">${types.map((type) => `<option value="${type}">${type}</option>`).join("")}</select>
           </div>
-          <div id="assignmentInfo" class="card">${assignmentInfo(defaultSubject, types[0])}</div>
-          <div class="field">
-            <label for="imageInput">作业图片</label>
-            <div class="upload-drop">
+          <div id="assignmentInfo" class="card assignment-card">${assignmentInfo(defaultSubject, types[0])}</div>
+          <div class="field upload-field">
+            <label for="imageInput">上传试卷图片</label>
+            <div id="uploadDrop" class="upload-drop">
               <input id="imageInput" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" />
-              <div id="previewWrap">${state.selectedPreview ? `<img class="preview" src="${state.selectedPreview}" alt="作业预览" />` : `<span>jpg / png / jpeg</span>`}</div>
+              <div id="previewWrap">${uploadPreviewMarkup()}</div>
             </div>
           </div>
           <div class="button-row">
-            <button id="gradeBtn" class="btn" type="submit">开始 AI 批改</button>
+            <button id="gradeBtn" class="btn xl" type="submit">开始 AI 批改</button>
             <span id="uploadStatus" class="muted"></span>
           </div>
         </form>
-        <aside class="panel">
-          <h3>Demo 内置样例</h3>
-          <div class="bar-list">
-            <div class="card">
-              <strong>数学计算题</strong>
-              <p class="muted">解方程 2x + 3 = 7，输出过程分、错误位置和正确解法。</p>
-            </div>
-            <div class="card">
-              <strong>英语作文</strong>
-              <p class="muted">识别一般过去时、冠词、be 动词和句子结构问题。</p>
-            </div>
-            <div class="card">
-              <strong>教师复核</strong>
-              <p class="muted">教师可修改分数和评语，提交后记录复核状态。</p>
-            </div>
+        <aside class="panel demo-guide">
+          <span class="feature-tag">比赛稳定演示</span>
+          <h3>固定 5 题数学练习卷</h3>
+          <p class="muted">当前演示模式会把上传图片识别为结构化 5 题试卷，稳定展示逐题批改、过程分、错因和教师复核闭环。</p>
+          <div class="demo-paper-list">
+            <div><strong>第 1、2、5 题</strong><span>正确，展示完整步骤得分</span></div>
+            <div><strong>第 3 题</strong><span>90 - 28 = 72，定位退位减法错误</span></div>
+            <div><strong>第 4 题</strong><span>前两步正确，最后 x = 4 扣过程分</span></div>
+          </div>
+          <div class="tag-list">
+            <span class="tag">43 / 50</span>
+            <span class="tag">2 道需订正</span>
+            <span class="tag">知识点归因</span>
           </div>
         </aside>
       </div>
@@ -218,7 +267,33 @@ function renderStudent() {
     document.querySelector("#assignmentInfo").innerHTML = assignmentInfo(subjectSelect.value, typeSelect.value);
   });
   imageInput.addEventListener("change", handlePreview);
+  document.querySelector("#uploadDrop").addEventListener("dragover", handleUploadDrag);
+  document.querySelector("#uploadDrop").addEventListener("dragleave", handleUploadDrag);
+  document.querySelector("#uploadDrop").addEventListener("drop", handleUploadDrop);
   uploadForm.addEventListener("submit", handleGradeSubmit);
+}
+
+function uploadSteps() {
+  return `
+    <div class="steps-bar">
+      ${["选择学生与题型", "上传试卷", "OCR 识别", "AI 批改", "查看结果"].map((item, index) => `
+        <div class="step-item">
+          <span>${index + 1}</span>
+          <strong>${item}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function uploadPreviewMarkup() {
+  if (state.selectedPreview) return `<img class="preview" src="${state.selectedPreview}" alt="作业预览" />`;
+  return `
+    <div class="upload-empty">
+      <strong>拖拽或点击上传试卷</strong>
+      <span>支持 jpg / png / jpeg，建议完整拍摄题干与答题过程</span>
+    </div>
+  `;
 }
 
 function assignmentInfo(subject, type) {
@@ -236,15 +311,32 @@ function handlePreview(event) {
   state.selectedFile = file || null;
   if (!file) {
     state.selectedPreview = "";
-    document.querySelector("#previewWrap").innerHTML = "<span>jpg / png / jpeg</span>";
+    document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
     return;
   }
   const reader = new FileReader();
   reader.onload = () => {
     state.selectedPreview = reader.result;
-    document.querySelector("#previewWrap").innerHTML = `<img class="preview" src="${state.selectedPreview}" alt="作业预览" />`;
+    document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
   };
   reader.readAsDataURL(file);
+}
+
+function handleUploadDrag(event) {
+  event.preventDefault();
+  event.currentTarget.classList.toggle("is-dragging", event.type === "dragover");
+}
+
+function handleUploadDrop(event) {
+  event.preventDefault();
+  event.currentTarget.classList.remove("is-dragging");
+  const file = event.dataTransfer.files[0];
+  if (!file) return;
+  const input = document.querySelector("#imageInput");
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  input.files = transfer.files;
+  handlePreview({ target: input });
 }
 
 async function handleGradeSubmit(event) {
@@ -315,19 +407,24 @@ async function renderResult(submissionId) {
             <a class="btn ghost" href="#teacher/${submission.id}">教师复核</a>
           </div>
         </div>
-        <div class="result-grid">
-          <aside class="panel">
-            ${submission.image_url ? `<h3>原始试卷图片</h3><img class="preview paper-preview" src="${submission.image_url}" alt="作业图片" />` : ""}
-            ${scorePanel(submission)}
+        <div class="result-grid result-page-grid">
+          <aside class="panel paper-side">
+            <div class="panel-title-row">
+              <div>
+                <h3>原始试卷图片</h3>
+                <p class="muted">保留原始答题卡，便于教师对照复核。</p>
+              </div>
+            </div>
+            ${submission.image_url ? `<img class="preview paper-preview" src="${submission.image_url}" alt="作业图片" />` : `<div class="empty">暂无图片</div>`}
             <h3>OCR 识别结果</h3>
             ${engineInfo(submission)}
             ${ocrPreview(submission)}
           </aside>
-          <div class="panel">
+          <div class="panel grading-side">
             ${gradingDetail(submission)}
           </div>
         </div>
-        <div class="panel" style="margin-top:18px">
+        <div class="panel weak-panel" style="margin-top:18px">
           <h3>个人薄弱点</h3>
           ${weakPointList(report.data.weak_points)}
           <p class="muted">${escapeHtml(report.data.personal_suggestion)}</p>
@@ -410,29 +507,64 @@ function gradingDetail(submission) {
   const isComposition = submission.subject === "英语" || submission.subject === "语文";
   const sheet = result.ai_metadata?.answer_sheet || {};
   return `
-    <div class="tag-list" style="margin-bottom:14px">
-      <span class="tag">AI 引擎：${escapeHtml(result.ai_engine || "RuleEngine")}</span>
-      ${sheet.fallback ? `<span class="tag">OCR 文本兜底</span>` : ""}
-      ${Array.isArray(sheet.questions) && sheet.questions.length ? `<span class="tag">逐题：${sheet.questions.length} 题</span>` : ""}
-    </div>
-    <h3>评分维度</h3>
-    ${dimensionBars(result.dimension_scores || {}, result.full_score || submission.assignment.full_score)}
+    ${resultSummaryCard(submission)}
     ${answerSheetDetails(result)}
-    <h3>${isComposition ? "内容与表达分析" : "解题过程分析"}</h3>
-    <p class="muted">${escapeHtml(result.process_analysis || result.content_analysis || "暂无分析")}</p>
-    ${result.structure_analysis ? `<p class="muted">${escapeHtml(result.structure_analysis)}</p>` : ""}
-    ${result.language_analysis ? `<p class="muted">${escapeHtml(result.language_analysis)}</p>` : ""}
-    ${mistakeBlock(result)}
-    ${result.correct_solution ? `<h3>正确解法</h3><div class="code-box">${escapeHtml(result.correct_solution)}</div>` : ""}
-    ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${escapeHtml(result.revised_example)}</div>` : ""}
-    <h3>知识点</h3>
-    <div class="tag-list">${(result.knowledge_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("") || "<span class='muted'>暂无</span>"}</div>
-    <h3>薄弱点</h3>
-    <div class="tag-list">${(result.weak_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("") || "<span class='muted'>暂无明显薄弱点</span>"}</div>
-    <h3>个性化评语</h3>
-    <p class="muted">${escapeHtml(result.comment || "暂无评语")}</p>
-    <h3>学习建议</h3>
-    <p class="muted">${escapeHtml(result.suggestion || "暂无建议")}</p>
+    <div class="result-analysis-card">
+      <h3>${isComposition ? "内容与表达分析" : "整体过程分析"}</h3>
+      <p class="muted">${escapeHtml(result.process_analysis || result.content_analysis || "暂无分析")}</p>
+      ${result.structure_analysis ? `<p class="muted">${escapeHtml(result.structure_analysis)}</p>` : ""}
+      ${result.language_analysis ? `<p class="muted">${escapeHtml(result.language_analysis)}</p>` : ""}
+      ${mistakeBlock(result)}
+      ${result.correct_solution ? `<h3>正确解法</h3><div class="code-box">${escapeHtml(result.correct_solution)}</div>` : ""}
+      ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${escapeHtml(result.revised_example)}</div>` : ""}
+      <div class="result-two-col">
+        <div>
+          <h3>知识点</h3>
+          <div class="tag-list">${(result.knowledge_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("") || "<span class='muted'>暂无</span>"}</div>
+        </div>
+        <div>
+          <h3>薄弱点</h3>
+          <div class="tag-list">${(result.weak_points || []).map((point) => `<span class="tag danger">${escapeHtml(point)}</span>`).join("") || "<span class='muted'>暂无明显薄弱点</span>"}</div>
+        </div>
+      </div>
+      <h3>个性化评语</h3>
+      <p class="muted">${escapeHtml(result.comment || "暂无评语")}</p>
+      <h3>学习建议</h3>
+      <p class="muted">${escapeHtml(result.suggestion || "暂无建议")}</p>
+    </div>
+  `;
+}
+
+function resultSummaryCard(submission) {
+  const result = submission.grading_result || {};
+  const sheet = result.ai_metadata?.answer_sheet || {};
+  const questions = Array.isArray(sheet.questions) ? sheet.questions : [];
+  const score = result.score ?? submission.effective_score ?? submission.ai_score ?? 0;
+  const full = result.full_score ?? submission.grading_full_score ?? submission.assignment.full_score;
+  const correct = questions.filter((question) => question.is_correct).length;
+  const partial = questions.filter((question) => !question.is_correct && questionStatus(question) === "部分正确").length;
+  const wrong = questions.filter((question) => !question.is_correct && questionStatus(question) !== "部分正确").length;
+  return `
+    <div class="result-summary-card">
+      <div>
+        <span class="feature-tag">AI 批改总览</span>
+        <h3>${escapeHtml(submission.assignment.title)}</h3>
+      </div>
+      <div class="summary-score"><strong>${escapeHtml(formatScore(score))}</strong><span>/ ${escapeHtml(formatScore(full))}</span></div>
+      <div class="summary-grid">
+        <div><span>正确题</span><strong>${correct || (result.is_correct ? 1 : 0)}</strong></div>
+        <div><span>部分正确</span><strong>${partial}</strong></div>
+        <div><span>需订正</span><strong>${questions.length ? partial + wrong : (result.is_correct ? 0 : 1)}</strong></div>
+        <div><span>题目数</span><strong>${questions.length || 1}</strong></div>
+      </div>
+      <div class="tag-list">
+        <span class="tag">AI 引擎：${escapeHtml(result.ai_engine || "RuleEngine")}</span>
+        ${sheet.fallback ? `<span class="tag">OCR 文本兜底</span>` : ""}
+        ${questions.length ? `<span class="tag">逐题批改</span>` : ""}
+      </div>
+      <h3>评分维度</h3>
+      ${dimensionBars(result.dimension_scores || {}, full)}
+    </div>
   `;
 }
 
@@ -444,14 +576,14 @@ function answerSheetDetails(result) {
   const totalScore = sheet?.score ?? result.score ?? 0;
   const totalFull = sheet?.full_score ?? result.full_score ?? 0;
   return `
-    <h3>逐题批改</h3>
-    <div class="mini-grid">
-      <div class="metric-card"><span>题目数</span><strong>${questions.length}</strong></div>
-      <div class="metric-card"><span>正确题</span><strong>${correctCount}</strong></div>
-      <div class="metric-card"><span>需订正</span><strong>${questions.length - correctCount}</strong></div>
-      <div class="metric-card"><span>整卷得分</span><strong>${escapeHtml(formatScore(totalScore))} / ${escapeHtml(formatScore(totalFull))}</strong></div>
+    <div class="question-section-head">
+      <div>
+        <h3>逐题批改</h3>
+        <p class="muted">共 ${questions.length} 题，正确 ${correctCount} 题，需订正 ${questions.length - correctCount} 题。</p>
+      </div>
+      <span class="score-pill ok">整卷 ${escapeHtml(formatScore(totalScore))} / ${escapeHtml(formatScore(totalFull))}</span>
     </div>
-    <div class="bar-list">
+    <div class="question-list">
       ${questions.map((question, index) => {
         const no = question.question_no || index + 1;
         const score = question.score ?? 0;
@@ -463,19 +595,25 @@ function answerSheetDetails(result) {
           <div class="card question-card ${statusClass}">
             <div class="section-head" style="margin-bottom:10px">
               <div>
-                <strong>第 ${escapeHtml(no)} 题 · ${escapeHtml(question.subject || "自动识别")} · ${escapeHtml(question.question_type || "题型未定")}</strong>
-                <p class="muted">${escapeHtml(question.question_text || "未识别到完整题干")}</p>
+                <span class="question-kicker">第 ${escapeHtml(no)} 题 · ${escapeHtml(question.question_type || "题型未定")}</span>
+                <h3>${escapeHtml(question.question_text || "未识别到完整题干")}</h3>
               </div>
               <span class="score-pill ${statusClass}">${status} · ${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</span>
             </div>
-            <p class="muted"><strong>学生作答：</strong>${escapeHtml(question.student_answer || "未识别到作答")}</p>
-            <p class="muted"><strong>分析：</strong>${escapeHtml(question.process_analysis || question.comment || "暂无分析")}</p>
-            ${mistakes.length ? `<div class="mistake-list">${mistakes.map((item) => `<div class="mistake-highlight"><strong>${escapeHtml(item.step || "问题")}</strong><p>${escapeHtml(item.error || item.reason || item)}</p></div>`).join("")}</div>` : ""}
-            ${question.correct_solution ? `<div class="code-box">${escapeHtml(question.correct_solution)}</div>` : ""}
-            ${question.suggestion ? `<p class="muted"><strong>建议：</strong>${escapeHtml(question.suggestion)}</p>` : ""}
+            <div class="answer-block">
+              <strong>学生作答</strong>
+              <p>${escapeHtml(question.student_answer || "未识别到作答")}</p>
+            </div>
+            <div class="analysis-block">
+              <strong>过程分析</strong>
+              <p>${escapeHtml(question.process_analysis || question.comment || "暂无分析")}</p>
+            </div>
+            ${mistakes.length ? `<div class="mistake-list">${mistakes.map((item) => `<div class="mistake-box"><strong>${escapeHtml(item.step || "错误定位")}</strong><p>${escapeHtml(item.error || item.reason || item)}</p></div>`).join("")}</div>` : ""}
+            ${question.correct_solution ? `<div class="solution-box"><strong>正确解法</strong><p>${escapeHtml(question.correct_solution)}</p></div>` : ""}
+            ${question.suggestion ? `<div class="suggestion-box"><strong>建议</strong><p>${escapeHtml(question.suggestion)}</p></div>` : ""}
             <div class="tag-list" style="margin-top:10px">
               ${(question.knowledge_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
-              ${(question.weak_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
+              ${(question.weak_points || []).map((point) => `<span class="tag danger">${escapeHtml(point)}</span>`).join("")}
             </div>
           </div>
         `;
@@ -505,10 +643,10 @@ function mistakeBlock(result) {
       ${items
         .map(
           (item) => `
-            <div class="card">
+            <div class="mistake-box">
               <strong>${escapeHtml(item.step || item.original || "问题")}</strong>
-              <p class="muted">${escapeHtml(item.error || item.reason || "")}</p>
-              ${item.suggestion ? `<p class="muted">建议：${escapeHtml(item.suggestion)}</p>` : ""}
+              <p>${escapeHtml(item.error || item.reason || "")}</p>
+              ${item.suggestion ? `<p>建议：${escapeHtml(item.suggestion)}</p>` : ""}
             </div>
           `,
         )
@@ -541,7 +679,11 @@ function dimensionBars(scores, fullScore) {
 async function renderTeacher(selectedId) {
   const response = await api("/api/submissions");
   state.submissions = response.data;
-  const selected = selectedId || state.submissions[0]?.id;
+  const filteredSubmissions = filterTeacherSubmissions(state.submissions);
+  const selected =
+    (selectedId && filteredSubmissions.some((item) => String(item.id) === String(selectedId)) ? selectedId : null) ||
+    filteredSubmissions[0]?.id ||
+    state.submissions[0]?.id;
   const detail = selected ? (await api(`/api/submissions/${selected}`)).data : null;
 
   app.innerHTML = `
@@ -554,6 +696,7 @@ async function renderTeacher(selectedId) {
         <a class="btn secondary" href="#analysis">班级分析</a>
       </div>
       ${teacherSummary(state.submissions)}
+      ${teacherFilterTabs()}
       <div class="teacher-layout">
         <div class="table-wrap teacher-table">
           <div class="table-toolbar">
@@ -561,7 +704,7 @@ async function renderTeacher(selectedId) {
               <strong>作业提交列表</strong>
               <p class="muted">按最新提交排序，点击右侧按钮查看复核详情。</p>
             </div>
-            <span class="tag">${state.submissions.length} 条记录</span>
+            <span class="tag">${filteredSubmissions.length} 条记录</span>
           </div>
           <table>
             <thead>
@@ -575,7 +718,7 @@ async function renderTeacher(selectedId) {
               </tr>
             </thead>
             <tbody>
-              ${state.submissions.map((submission) => submissionRow(submission, selected)).join("")}
+              ${filteredSubmissions.map((submission) => submissionRow(submission, selected)).join("") || `<tr><td colspan="6"><div class="empty compact">当前筛选下暂无提交</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -589,11 +732,34 @@ async function renderTeacher(selectedId) {
       location.hash = `#teacher/${button.dataset.openSubmission}`;
     });
   });
+  document.querySelectorAll("[data-teacher-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.teacherFilter = button.dataset.teacherFilter;
+      renderTeacher();
+    });
+  });
 
   const reviewForm = document.querySelector("#reviewForm");
   if (reviewForm) reviewForm.addEventListener("submit", handleReviewSubmit);
   const returnBtn = document.querySelector("#returnBtn");
   if (returnBtn) returnBtn.addEventListener("click", handleReturnSubmit);
+}
+
+function filterTeacherSubmissions(submissions) {
+  if (state.teacherFilter === "全部") return submissions;
+  return submissions.filter((item) => item.status === state.teacherFilter);
+}
+
+function teacherFilterTabs() {
+  const filters = ["全部", "待批改", "AI 已批改", "教师已复核", "已返回学生"];
+  return `
+    <div class="filter-tabs">
+      ${filters.map((filter) => {
+        const count = filter === "全部" ? state.submissions.length : state.submissions.filter((item) => item.status === filter).length;
+        return `<button class="${state.teacherFilter === filter ? "active" : ""}" type="button" data-teacher-filter="${filter}">${filter}<span>${count}</span></button>`;
+      }).join("")}
+    </div>
+  `;
 }
 
 function teacherSummary(submissions) {
@@ -640,6 +806,7 @@ function reviewPanel(submission) {
   const full = result.full_score ?? submission.grading_full_score ?? submission.assignment.full_score;
   const aiScore = submission.ai_score ?? result.score ?? 0;
   const teacherScore = submission.teacher_score ?? aiScore;
+  const scoreDiff = Number(teacherScore) - Number(aiScore);
   const comment = result.comment || teacherCommentFallback(submission);
   const reviewNote =
     result.review_note ||
@@ -657,6 +824,7 @@ function reviewPanel(submission) {
         <div class="review-score-strip">
           <div><span>AI 分数</span><strong>${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full))}</strong></div>
           <div><span>教师分数</span><strong>${escapeHtml(formatScore(teacherScore))} / ${escapeHtml(formatScore(full))}</strong></div>
+          <div><span>分数差异</span><strong>${scoreDiff >= 0 ? "+" : ""}${escapeHtml(formatScore(scoreDiff))}</strong></div>
           <div><span>批改引擎</span><strong>${escapeHtml(result.ai_engine || "RuleEngine")}</strong></div>
         </div>
         ${teacherAiSummary(submission)}
@@ -670,7 +838,7 @@ function reviewPanel(submission) {
           <span class="tag">二次标注闭环</span>
         </div>
         <div class="review-tip">
-          <strong>复核建议</strong>
+          <strong>二次标注闭环</strong>
           <p>优先核对扣分题、最终答案和错因归因。保存后状态会变为“教师已复核”。</p>
         </div>
         <div class="field">
@@ -785,18 +953,30 @@ async function renderAnalysis() {
         ${metricCard("最高分", data.highest_score)}
         ${metricCard("最低分", data.lowest_score)}
       </div>
-      <div class="analysis-grid" style="margin-top:18px">
-        <div class="panel">
+      <div class="analysis-grid dashboard-grid" style="margin-top:18px">
+        <div class="panel" data-chart-panel="weak">
           <h3>薄弱知识点排行</h3>
           ${rankBars(data.common_weak_points, "knowledge_point", "count")}
-          <h3>教学建议</h3>
-          <p class="muted">${escapeHtml(data.teacher_suggestion)}</p>
         </div>
-        <div class="panel">
+        <div class="panel" data-chart-panel="accuracy">
           <h3>各题正确率</h3>
           ${accuracyBars(data.question_accuracy)}
+        </div>
+      </div>
+      <div class="analysis-bottom">
+        <div class="panel">
           <h3>高频错误</h3>
           ${mistakeRank(data.frequent_mistakes)}
+        </div>
+        <div class="panel suggestion-panel">
+          <span class="feature-tag">AI 教学建议</span>
+          <h3>下一课建议安排</h3>
+          <p>${escapeHtml(data.teacher_suggestion)}</p>
+          <div class="tag-list">
+            <span class="tag">针对性讲解</span>
+            <span class="tag">错题订正</span>
+            <span class="tag">基础计算训练</span>
+          </div>
         </div>
       </div>
     </section>
@@ -807,8 +987,8 @@ async function renderAnalysis() {
 
 function renderECharts(data) {
   if (!window.echarts) return;
-  const weakPanel = document.querySelector(".analysis-grid .panel");
-  const accuracyPanel = document.querySelectorAll(".analysis-grid .panel")[1];
+  const weakPanel = document.querySelector("[data-chart-panel='weak']");
+  const accuracyPanel = document.querySelector("[data-chart-panel='accuracy']");
   if (!weakPanel || !accuracyPanel) return;
   const weakChart = document.createElement("div");
   weakChart.className = "chart-box";
