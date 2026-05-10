@@ -127,6 +127,76 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(len(result["ai_metadata"]["answer_sheet"]["questions"]), 2)
         self.assertIn("一般过去时", result["weak_points"])
 
+    def test_answer_sheet_grading_failure_keeps_ocr_context(self):
+        from backend.app.services.grading import GradingService
+
+        assignment = Assignment(
+            title="AI 自动识别整张答题卡",
+            subject="自动识别",
+            question_type="答题卡",
+            question="整张答题卡",
+            standard_answer="",
+            full_score=100,
+            knowledge_points=["整张答题卡"],
+        )
+        service = GradingService()
+        result = service._grading_failed_result(assignment, "1. 2x+3=7\n答：x=2", ["The read operation timed out"])
+        self.assertEqual(result["ai_engine"], "LLMGradingFailed")
+        self.assertIn("OCR 已识别", result["process_analysis"])
+        self.assertNotIn("未能从上传图片中识别", result["process_analysis"])
+
+    def test_answer_sheet_text_fallback_grades_math_sheet(self):
+        from backend.app.services.grading import GradingService
+
+        assignment = Assignment(
+            title="AI 自动识别整张答题卡",
+            subject="自动识别",
+            question_type="答题卡",
+            question="整张答题卡",
+            standard_answer="",
+            full_score=100,
+            knowledge_points=["整张答题卡"],
+        )
+        ocr_text = """数学练习卷
+1. 计算：36÷4+5×2
+36÷4=9
+5×2=10
+9+10=19
+答：19
+
+2. 解方程：2x+3=11
+2x=11-3
+2x=8
+x=4
+答：x=4
+
+3. 计算：15×6-28
+15×6=90
+90-28=72
+答：72
+
+4. 解方程：3x-5=10
+3x=10+5
+3x=15
+x=4
+答：x=4
+
+5. 应用题：小明买了3支铅笔，每支2元，又买了1本笔记本5元，一共用了多少钱？
+3×2=6（元）
+6+5=11（元）
+答：一共用了11元。
+"""
+        result = GradingService()._grade_answer_sheet_from_text(ocr_text, assignment, ["The read operation timed out"])
+        self.assertIsNotNone(result)
+        self.assertEqual(result["ai_engine"], "LocalFallback:OCRRule")
+        self.assertEqual(result["full_score"], 100)
+        self.assertLess(result["score"], 100)
+        self.assertGreater(result["score"], 80)
+        questions = result["ai_metadata"]["answer_sheet"]["questions"]
+        self.assertEqual(len(questions), 5)
+        self.assertFalse(questions[3]["is_correct"])
+        self.assertIn("方程求解", result["weak_points"])
+
 
 if __name__ == "__main__":
     unittest.main()

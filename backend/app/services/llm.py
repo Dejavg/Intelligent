@@ -69,7 +69,7 @@ class LLMClient:
                 {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
             ],
         }
-        data = self._post_chat_completions(payload)
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
         content = data["choices"][0]["message"]["content"]
         return LLMResult(
             data=_extract_json(content),
@@ -108,7 +108,7 @@ class LLMClient:
                 },
             ],
         }
-        data = self._post_chat_completions(payload)
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
         content = data["choices"][0]["message"]["content"]
         return LLMResult(
             data=_extract_json(content),
@@ -153,7 +153,7 @@ class LLMClient:
                 },
             ],
         }
-        data = self._post_chat_completions(payload)
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
         content = data["choices"][0]["message"]["content"]
         return LLMResult(
             data=_extract_json(content),
@@ -232,7 +232,7 @@ class LLMClient:
                 },
             ],
         }
-        data = self._post_chat_completions(payload)
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
         content = data["choices"][0]["message"]["content"]
         return LLMResult(
             data=_extract_json(content),
@@ -241,7 +241,80 @@ class LLMClient:
             model=_resolve_vision_model(self.provider, self.vision_model),
         )
 
-    def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def grade_answer_sheet_text(self, ocr_text: str, assignment: Assignment) -> LLMResult:
+        if not self.available:
+            raise RuntimeError("LLM is not configured")
+        user_prompt = {
+            "task": (
+                "请根据 OCR 已识别出的完整答题卡文本进行逐题批改。文本包含题目内容和学生作答过程，"
+                "不得依赖网站题库，不得把示例题或标准答案当作学生答案。"
+            ),
+            "answer_sheet_text": ocr_text,
+            "requirements": [
+                "识别每一道题的题号、学科、题型、完整题干、学生作答内容。",
+                "根据题干和学生作答自行判断合理标准答案或评分要点。",
+                "数学题要分析运算顺序、方程步骤、关键公式、中间计算和最终答案，支持部分分。",
+                "语文/英语等主观题要按内容、结构、语言表达、语法/错别字或拼写等维度评分。",
+                "逐题输出得分、满分、是否正确、错因、正确解法或修改示例、知识点、薄弱点、个性化建议。",
+                "最后汇总整张答题卡总分、总满分、整体评语、共性薄弱点和后续学习建议。",
+            ],
+            "default_full_score_policy": "若文本没有标明分值，请根据题型和难度给出合理满分，并在 warnings 中说明。",
+            "output_schema": {
+                "detected_subjects": ["数学", "英语"],
+                "score": "整张答题卡总得分，数字",
+                "full_score": "整张答题卡总满分，数字",
+                "is_correct": "是否全对，布尔值",
+                "summary": "整体批改分析",
+                "comment": "面向学生的整体个性化评语",
+                "suggestion": "整体学习建议",
+                "common_weak_points": ["高频薄弱点"],
+                "warnings": ["识别或评分不确定说明"],
+                "questions": [
+                    {
+                        "question_no": "题号",
+                        "subject": "学科",
+                        "question_type": "题型",
+                        "question_text": "完整题干",
+                        "student_answer": "学生作答",
+                        "score": "本题得分，数字",
+                        "full_score": "本题满分，数字",
+                        "is_correct": "是否正确，布尔值",
+                        "process_analysis": "步骤/内容分析",
+                        "mistakes": [{"step": "出错步骤或原句", "error": "错误原因"}],
+                        "knowledge_points": ["知识点"],
+                        "weak_points": ["薄弱点"],
+                        "correct_solution": "正确解法、参考答案或修改示例",
+                        "comment": "本题反馈",
+                        "suggestion": "本题建议"
+                    }
+                ]
+            },
+            "output_rule": "只输出一个合法 JSON 对象，不要输出 Markdown 代码块。",
+        }
+        payload = {
+            "model": self.model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一名严谨的多学科阅卷老师。请依据用户给出的整张答题卡 OCR 文本逐题批改，"
+                        "你的输出必须是可解析 JSON。"
+                    ),
+                },
+                {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
+            ],
+        }
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
+        content = data["choices"][0]["message"]["content"]
+        return LLMResult(
+            data=_extract_json(content),
+            raw_text=content,
+            provider=self.provider,
+            model=self.model,
+        )
+
+    def _post_chat_completions(self, payload: dict[str, Any], timeout: int | None = None) -> dict[str, Any]:
         url = self.base_url.rstrip("/") + "/chat/completions"
         req = urllib.request.Request(
             url,
@@ -253,7 +326,7 @@ class LLMClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")

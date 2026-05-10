@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -50,24 +51,120 @@ class GradingService:
         return rule_result
 
     def _grade_answer_sheet(self, ocr_text: str, assignment: Assignment, image_path: Path | None) -> dict:
-        if not image_path:
+        if not image_path and not ocr_text.strip():
             result = self._empty_result("自动识别", assignment)
             result["process_analysis"] = "整张答题卡批改需要上传包含题目与作答的图片。"
             return result
-        if not (settings.llm_enabled and self.llm_client.vision_available):
+        if not settings.llm_enabled:
+            fallback = self._grade_answer_sheet_from_text(
+                ocr_text,
+                assignment,
+                ["大模型未启用，已使用 OCR 文本本地规则批改。"],
+            )
+            if fallback:
+                return fallback
             result = self._empty_result("自动识别", assignment)
-            result["process_analysis"] = "整张答题卡批改需要启用视觉大模型。"
+            result["process_analysis"] = "整张答题卡批改需要启用大模型。"
             result["suggestion"] = "请在 .env 中配置 LLM_ENABLED=true、OCR_PROVIDER=llm、KIMI_API_KEY 和 LLM_VISION_MODEL。"
             return result
+
+        errors: list[str] = []
+        if ocr_text.strip() and self.llm_client.available:
+            try:
+                llm_result = self.llm_client.grade_answer_sheet_text(ocr_text, assignment)
+                return normalize_answer_sheet_grading(llm_result.data, llm_result.provider, llm_result.model)
+            except Exception as exc:
+                errors.append(f"文本批改失败：{exc}")
+                fallback = self._grade_answer_sheet_from_text(ocr_text, assignment, errors)
+                if fallback:
+                    return fallback
+
+        if not image_path:
+            return self._grading_failed_result(assignment, ocr_text, errors)
+
+        if not self.llm_client.vision_available:
+            errors.append("视觉大模型不可用")
+            return self._grading_failed_result(assignment, ocr_text, errors)
+
         try:
             llm_result = self.llm_client.grade_answer_sheet(image_path, ocr_text, assignment)
             return normalize_answer_sheet_grading(llm_result.data, llm_result.provider, llm_result.model)
         except Exception as exc:
-            result = self._empty_result("自动识别", assignment)
-            result["process_analysis"] = f"整张答题卡大模型批改失败：{exc}"
-            result["suggestion"] = "请检查大模型接口、图片清晰度、图片大小和模型是否支持视觉输入。"
-            result["ai_metadata"] = {"llm_fallback_reason": str(exc)}
-            return result
+            errors.append(f"图片批改失败：{exc}")
+            fallback = self._grade_answer_sheet_from_text(ocr_text, assignment, errors)
+            if fallback:
+                return fallback
+            return self._grading_failed_result(assignment, ocr_text, errors)
+
+    def _grade_answer_sheet_from_text(self, ocr_text: str, assignment: Assignment, warnings: list[str]) -> dict | None:
+        questions = _split_answer_sheet_questions(ocr_text)
+        graded = []
+        for question_no, body in questions:
+            graded_question = self._grade_local_answer_sheet_question(question_no, body)
+            if graded_question:
+                graded.append(graded_question)
+
+        if not graded:
+            return None
+
+        target_full_score = assignment.full_score or sum(question["full_score"] for question in graded)
+        per_question_full = target_full_score / len(graded)
+        for question in graded:
+            base_score = float(question.pop("_base_score", question["score"]))
+            question["full_score"] = _clean_number(per_question_full)
+            question["score"] = _clean_number(base_score / 10 * per_question_full)
+
+        score = _clean_number(sum(float(question["score"]) for question in graded))
+        full_score = _clean_number(sum(float(question["full_score"]) for question in graded))
+        correct_count = sum(1 for question in graded if question.get("is_correct"))
+        weak_points = unique_list(
+            [weak for question in graded for weak in question.get("weak_points", [])]
+        )
+        raw = {
+            "detected_subjects": unique_list([question.get("subject", "数学") for question in graded]),
+            "score": score,
+            "full_score": full_score,
+            "is_correct": score >= full_score and full_score > 0,
+            "summary": f"已根据 OCR 文本逐题批改 {len(graded)} 道题，其中 {correct_count} 道正确，{len(graded) - correct_count} 道需要订正。",
+            "comment": (
+                "这张答题卡大部分步骤比较完整，说明你能按题型展开解题。需要重点订正扣分题，尤其要检查方程最后一步和基础运算。"
+                if weak_points
+                else "这张答题卡解题过程清楚，关键计算和最终答案整体准确，继续保持这种分步书写习惯。"
+            ),
+            "suggestion": (
+                "订正时先把错题的关键一步重新算一遍，再把最终答案代回原题检验；后续可集中练习方程求解和四则混合运算。"
+                if weak_points
+                else "可以继续练习更综合的题目，保持每题写出关键步骤和最终答句。"
+            ),
+            "common_weak_points": weak_points,
+            "warnings": unique_list(
+                [
+                    *warnings,
+                    "大模型批改未成功返回时，系统已基于 OCR 文本启用本地可解释规则兜底。",
+                ]
+            ),
+            "questions": graded,
+        }
+        result = normalize_answer_sheet_grading(raw, "LocalFallback", "ocr-rule")
+        result["ai_engine"] = "LocalFallback:OCRRule"
+        result["ai_metadata"]["answer_sheet"]["fallback"] = True
+        result["ai_metadata"]["answer_sheet"]["fallback_reason"] = "；".join(warnings)
+        return result
+
+    def _grade_local_answer_sheet_question(self, question_no: str, body: str) -> dict | None:
+        equation = _extract_linear_equation(body)
+        if equation:
+            return _grade_linear_equation_question(question_no, body, equation)
+
+        expression = _extract_calculation_expression(body)
+        if expression:
+            return _grade_arithmetic_question(question_no, body, expression)
+
+        word_problem = _extract_simple_word_problem(body)
+        if word_problem:
+            return _grade_simple_word_problem(question_no, body, word_problem)
+
+        return None
 
     def _grade_by_rule(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment) -> dict:
         if subject == "数学":
@@ -295,9 +392,372 @@ class GradingService:
             "ai_engine": "NoReliableGrading",
         }
 
+    def _grading_failed_result(self, assignment: Assignment, ocr_text: str, errors: list[str]) -> dict:
+        recognized = bool(ocr_text.strip())
+        reason = "；".join(errors) if errors else "大模型批改失败。"
+        return {
+            "subject": "自动识别",
+            "score": 0,
+            "full_score": assignment.full_score,
+            "is_correct": False,
+            "process_analysis": (
+                f"OCR 已识别出答题卡内容，但 AI 大模型批改阶段失败：{reason}"
+                if recognized
+                else f"AI 大模型批改失败：{reason}"
+            ),
+            "content_analysis": "OCR 识别已完成，批改阶段未能成功返回结构化逐题结果。" if recognized else "",
+            "structure_analysis": "",
+            "language_analysis": "",
+            "mistakes": [{"step": "AI批改", "error": reason}],
+            "errors": [],
+            "strengths": ["OCR 已识别出答题卡文本"] if recognized else [],
+            "knowledge_points": assignment.knowledge_points or ["整张答题卡"],
+            "weak_points": ["AI批改超时或接口异常"],
+            "dimension_scores": {"AI批改": 0},
+            "correct_solution": "",
+            "revised_example": None,
+            "comment": "这张答题卡已经完成识别，但大模型批改阶段没有及时返回结果。请点击“重新识别并批改”，或稍后重试。",
+            "suggestion": "建议优先使用已识别文本进行批改；如仍超时，可提高 LLM_TIMEOUT，或压缩图片后重新上传。",
+            "ai_engine": "LLMGradingFailed",
+            "ai_metadata": {
+                "llm_fallback_reason": reason,
+                "answer_sheet": {
+                    "warnings": errors,
+                    "questions": [],
+                    "summary": "OCR 成功，批改阶段失败。",
+                },
+            },
+        }
+
 
 def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text).replace("，", ",").replace("。", ".")
+
+
+def _split_answer_sheet_questions(text: str) -> list[tuple[str, str]]:
+    matches = list(re.finditer(r"(?m)^\s*(\d+)[\.、．]\s*", text))
+    questions: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        if body:
+            questions.append((match.group(1), body))
+    return questions
+
+
+def _grade_arithmetic_question(question_no: str, body: str, expression: str) -> dict | None:
+    expected = _safe_eval_math(expression)
+    if expected is None:
+        return None
+
+    student_answer = _extract_numeric_answer(body)
+    correct = student_answer is not None and _numbers_equal(student_answer, expected)
+    mistakes = []
+    weak_points = []
+    if correct:
+        base_score = 10
+        analysis = "学生能够按四则混合运算顺序完成计算，关键步骤和最终答案一致。"
+        comment = "本题计算顺序清楚，答案正确。"
+        suggestion = "继续保持先算乘除、再算加减的书写习惯。"
+    else:
+        base_score = 5 if student_answer is not None else 3
+        shown = _format_number(student_answer) if student_answer is not None else "未写出"
+        mistakes.append({"step": "最终答案", "error": f"本题正确结果是 {_format_number(expected)}，学生答案为 {shown}。"})
+        weak_points = ["四则混合运算", "运算顺序"]
+        analysis = "学生已经尝试列出计算过程，但最终结果与题目计算值不一致，需要订正运算顺序或基础计算。"
+        comment = "你已经开始分步计算，但最后答案还需要重新核对。"
+        suggestion = "建议做完后把每一步重新代入原式检查，尤其注意乘除优先于加减。"
+
+    return {
+        "question_no": question_no,
+        "subject": "数学",
+        "question_type": "计算题",
+        "question_text": _first_line(body),
+        "student_answer": _student_part(body),
+        "score": base_score,
+        "_base_score": base_score,
+        "full_score": 10,
+        "is_correct": correct,
+        "process_analysis": analysis,
+        "mistakes": mistakes,
+        "knowledge_points": ["四则混合运算", "运算顺序"],
+        "weak_points": weak_points,
+        "correct_solution": f"{expression} = {_format_number(expected)}",
+        "comment": comment,
+        "suggestion": suggestion,
+    }
+
+
+def _grade_linear_equation_question(question_no: str, body: str, equation: dict) -> dict:
+    a = equation["a"]
+    b = equation["b"]
+    c = equation["c"]
+    expected = (c - b) / a
+    student_answer = _extract_equation_answer(body)
+    intermediate_correct = _contains_intermediate_equation(body, a, c - b)
+    correct = student_answer is not None and _numbers_equal(student_answer, expected)
+    mistakes = []
+    weak_points = []
+
+    if correct:
+        base_score = 10
+        analysis = "学生移项、合并和最终求解都正确，解题步骤完整。"
+        comment = "本题方程求解过程清晰，最终答案正确。"
+        suggestion = "继续保持每一步写出等式变化的习惯。"
+    elif student_answer is not None and intermediate_correct:
+        base_score = 7
+        mistakes.append(
+            {
+                "step": f"x = {_format_number(student_answer)}",
+                "error": f"由 {_coef_text(a)}x = {_format_number(c - b)} 应得到 x = {_format_number(expected)}。",
+            }
+        )
+        weak_points = ["方程求解", "除法运算"]
+        analysis = "学生移项和中间等式基本正确，但最后由系数求 x 时出现计算错误，导致最终答案错误。"
+        comment = "你的解题思路是对的，扣分主要出在最后一步除法。"
+        suggestion = "建议把求出的 x 代回原方程检查，能快速发现最终答案是否合理。"
+    elif student_answer is not None:
+        base_score = 5
+        mistakes.append({"step": f"x = {_format_number(student_answer)}", "error": f"正确答案应为 x = {_format_number(expected)}。"})
+        weak_points = ["移项", "方程求解"]
+        analysis = "学生写出了最终答案，但关键移项或中间计算缺少可靠依据，需要补全步骤并订正答案。"
+        comment = "你已经知道要解出 x，但方程变形过程还需要更稳。"
+        suggestion = "练习时把移项、合并同类项、除以系数三步分开写。"
+    else:
+        base_score = 3
+        mistakes.append({"step": "最终答案", "error": f"未识别到明确的 x 值，正确答案应为 x = {_format_number(expected)}。"})
+        weak_points = ["步骤书写", "方程求解"]
+        analysis = "题目是方程求解，但 OCR 文本中没有明确最终答案，无法给出完整得分。"
+        comment = "你的作答需要写出明确的最终答案。"
+        suggestion = "每道方程题最后单独写一行“答：x = ...”，便于检查。"
+
+    return {
+        "question_no": question_no,
+        "subject": "数学",
+        "question_type": "解方程",
+        "question_text": _first_line(body),
+        "student_answer": _student_part(body),
+        "score": base_score,
+        "_base_score": base_score,
+        "full_score": 10,
+        "is_correct": correct,
+        "process_analysis": analysis,
+        "mistakes": mistakes,
+        "knowledge_points": ["一元一次方程", "移项", "等式性质"],
+        "weak_points": weak_points,
+        "correct_solution": f"{equation['text']}；{_coef_text(a)}x = {_format_number(c - b)}；x = {_format_number(expected)}。",
+        "comment": comment,
+        "suggestion": suggestion,
+    }
+
+
+def _grade_simple_word_problem(question_no: str, body: str, problem: dict) -> dict:
+    expected = problem["expected"]
+    student_answer = _extract_numeric_answer(body)
+    correct = student_answer is not None and _numbers_equal(student_answer, expected)
+    mistakes = []
+    weak_points = []
+    if correct:
+        base_score = 10
+        analysis = "学生能够先算铅笔总价，再加上笔记本价格，数量关系和最终答案正确。"
+        comment = "本题数量关系找得准确，答句也比较完整。"
+        suggestion = "应用题继续保持先列数量关系、再写答句的习惯。"
+    else:
+        base_score = 5 if student_answer is not None else 3
+        shown = _format_number(student_answer) if student_answer is not None else "未写出"
+        mistakes.append({"step": "应用题总价", "error": f"正确总价是 {_format_number(expected)} 元，学生答案为 {shown}。"})
+        weak_points = ["数量关系", "加乘混合应用"]
+        analysis = "学生已经尝试列式，但总价计算或答句结果与题意不一致。"
+        comment = "你能想到先列式，但应用题要再核对每个数量对应的含义。"
+        suggestion = "建议用“数量 × 单价 + 另一项价格”的结构复述题意后再计算。"
+
+    return {
+        "question_no": question_no,
+        "subject": "数学",
+        "question_type": "应用题",
+        "question_text": _first_line(body),
+        "student_answer": _student_part(body),
+        "score": base_score,
+        "_base_score": base_score,
+        "full_score": 10,
+        "is_correct": correct,
+        "process_analysis": analysis,
+        "mistakes": mistakes,
+        "knowledge_points": ["乘法意义", "加法应用", "人民币应用题"],
+        "weak_points": weak_points,
+        "correct_solution": (
+            f"{problem['count']}×{problem['unit_price']}={problem['subtotal']}（元）；"
+            f"{problem['subtotal']}+{problem['extra_price']}={_format_number(expected)}（元）。"
+        ),
+        "comment": comment,
+        "suggestion": suggestion,
+    }
+
+
+def _extract_calculation_expression(body: str) -> str | None:
+    match = re.search(r"计算[:：]\s*([^\r\n]+)", body)
+    if not match:
+        return None
+    expression = match.group(1).strip()
+    return expression if re.search(r"[+\-×xX*/÷]", expression) else None
+
+
+def _extract_linear_equation(body: str) -> dict | None:
+    match = None
+    for line in body.splitlines():
+        compact = _compact(line)
+        match = re.search(r"([+-]?\d*)x([+\-])(\d+(?:\.\d+)?)=([+-]?\d+(?:\.\d+)?)(?![\d.])", compact)
+        if match:
+            break
+    if not match:
+        return None
+    coefficient = _parse_coefficient(match.group(1))
+    b_value = float(match.group(3))
+    if match.group(2) == "-":
+        b_value = -b_value
+    if _numbers_equal(coefficient, 0):
+        return None
+    return {
+        "text": match.group(0),
+        "a": coefficient,
+        "b": b_value,
+        "c": float(match.group(4)),
+    }
+
+
+def _extract_simple_word_problem(body: str) -> dict | None:
+    if "应用题" not in body or "铅笔" not in body:
+        return None
+    count_match = re.search(r"(\d+)\s*支铅笔", body)
+    unit_match = re.search(r"每支\s*(\d+(?:\.\d+)?)\s*元", body)
+    extra_count_match = re.search(r"(\d+)\s*本(?:练习本|笔记本)", body)
+    extra_price_match = re.search(r"(?:练习本|笔记本)\s*(\d+(?:\.\d+)?)\s*元", body)
+    if not (count_match and unit_match and extra_price_match):
+        return None
+    count = float(count_match.group(1))
+    unit_price = float(unit_match.group(1))
+    extra_count = float(extra_count_match.group(1)) if extra_count_match else 1
+    extra_price = float(extra_price_match.group(1)) * extra_count
+    subtotal = count * unit_price
+    return {
+        "count": _format_number(count),
+        "unit_price": _format_number(unit_price),
+        "extra_price": _format_number(extra_price),
+        "subtotal": _format_number(subtotal),
+        "expected": subtotal + extra_price,
+    }
+
+
+def _safe_eval_math(expression: str) -> float | None:
+    normalized = (
+        expression.replace("×", "*")
+        .replace("x", "*")
+        .replace("X", "*")
+        .replace("÷", "/")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+    if not re.fullmatch(r"[0-9+\-*/().\s]+", normalized):
+        return None
+    try:
+        tree = ast.parse(normalized, mode="eval")
+        return float(_eval_numeric_node(tree.body))
+    except (SyntaxError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _eval_numeric_node(node: ast.AST) -> float:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if isinstance(node, ast.Num):
+        return float(node.n)
+    if isinstance(node, ast.UnaryOp):
+        value = _eval_numeric_node(node.operand)
+        if isinstance(node.op, ast.UAdd):
+            return value
+        if isinstance(node.op, ast.USub):
+            return -value
+    if isinstance(node, ast.BinOp):
+        left = _eval_numeric_node(node.left)
+        right = _eval_numeric_node(node.right)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right
+    raise ValueError("unsupported expression")
+
+
+def _extract_equation_answer(body: str) -> float | None:
+    matches = re.findall(r"(?<!\d)x\s*=\s*([+-]?\d+(?:\.\d+)?)", body.replace(" ", ""))
+    return float(matches[-1]) if matches else None
+
+
+def _extract_numeric_answer(body: str) -> float | None:
+    answer_matches = re.findall(r"答[:：]?\s*(?:一共用了)?\s*([+-]?\d+(?:\.\d+)?)", body)
+    if answer_matches:
+        return float(answer_matches[-1])
+    matches = re.findall(r"(?<![A-Za-z])([+-]?\d+(?:\.\d+)?)", body)
+    return float(matches[-1]) if matches else None
+
+
+def _contains_intermediate_equation(body: str, coefficient: float, rhs: float) -> bool:
+    compact = _compact(body)
+    coefficient_text = _coef_text(coefficient)
+    rhs_text = re.escape(str(_format_number(rhs)))
+    return bool(re.search(rf"{re.escape(coefficient_text)}x={rhs_text}(?![\d.])", compact))
+
+
+def _parse_coefficient(value: str) -> float:
+    if value in {"", "+"}:
+        return 1.0
+    if value == "-":
+        return -1.0
+    return float(value)
+
+
+def _coef_text(value: float) -> str:
+    if _numbers_equal(value, 1):
+        return ""
+    if _numbers_equal(value, -1):
+        return "-"
+    return str(_format_number(value))
+
+
+def _first_line(body: str) -> str:
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return lines[0] if lines else body.strip()
+
+
+def _student_part(body: str) -> str:
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return "\n".join(lines[1:]) if len(lines) > 1 else body.strip()
+
+
+def _numbers_equal(left: float | None, right: float | None, tolerance: float = 1e-6) -> bool:
+    if left is None or right is None:
+        return False
+    return abs(left - right) <= tolerance
+
+
+def _format_number(value: float | int | None) -> str | int | float:
+    if value is None:
+        return ""
+    number = float(value)
+    if abs(number - round(number)) <= 1e-6:
+        return int(round(number))
+    return round(number, 2)
+
+
+def _clean_number(value: float | int) -> int | float:
+    number = float(value)
+    if abs(number - round(number)) <= 1e-6:
+        return int(round(number))
+    return round(number, 1)
 
 
 def unique_list(values: list[str]) -> list[str]:
