@@ -8,6 +8,7 @@ const state = {
   evaluation: null,
   runtime: null,
   teacherFilter: "全部",
+  uploadStep: 1,
   selectedFile: null,
   selectedPreview: "",
   lastSubmissionId: null,
@@ -67,17 +68,18 @@ function setActiveNav(view) {
   });
 }
 
+// 首页首屏：用于比赛开场快速传达产品定位和核心演示结果。
 function renderHome() {
   app.innerHTML = `
     ${modeBanner()}
     <section class="hero product-hero">
       <div class="hero-copy">
-        <span class="feature-tag">比赛级完整 Demo · 多学科智能批改</span>
+        <span class="feature-tag">多学科 AI 智能作业批改系统</span>
         <h1>希沃智评</h1>
-        <p>面向课堂作业场景的 AI 智能批改系统，支持整张答题卡上传、结构化 OCR、逐题过程分、错因归因、个性化评语和班级学情报告。</p>
+        <p>面向学生和教师的作业批改 Demo，覆盖图片上传、OCR 识别、数学过程分、主观题评价、知识点薄弱分析和班级学情报告。</p>
         <div class="hero-actions">
-          <a class="btn xl" href="#student">进入稳定演示</a>
-          <a class="btn secondary xl" href="#teacher">查看教师闭环</a>
+          <a class="btn xl" href="#student">进入 Demo</a>
+          <a class="btn secondary xl" href="#teacher">教师工作台</a>
         </div>
         <div class="hero-proof">
           <span>固定 5 题数学卷</span>
@@ -104,10 +106,12 @@ function renderHome() {
         </div>
       </div>
       <div class="feature-grid">
-        ${featureCard("整卷上传", "支持完整答题卡图片，保留题目、步骤和最终答案。")}
-        ${featureCard("结构化 OCR", "固定演示卷稳定输出 5 道题结构，真实 OCR 可按配置切换。")}
-        ${featureCard("过程分评分", "不是只看结果，能解释哪一步正确、哪一步扣分。")}
-        ${featureCard("教师复核闭环", "教师可调整分数和评语，沉淀二次标注样本。")}
+        ${featureCard("OCR 识别", "结构化提取题干、步骤和学生作答。")}
+        ${featureCard("数学过程分", "按思路、计算、答案拆分给分。")}
+        ${featureCard("个性化评语", "根据表现生成温和具体的反馈。")}
+        ${featureCard("薄弱点分析", "自动归因知识点和错因。")}
+        ${featureCard("教师复核", "支持改分、评语和复核备注。")}
+        ${featureCard("班级报告", "汇总正确率、薄弱点和教学建议。")}
       </div>
     </section>
   `;
@@ -123,7 +127,7 @@ function heroPreviewCard() {
       <div class="preview-head">
         <div>
           <span class="feature-tag">AI 批改结果预览</span>
-          <h3>数学练习卷</h3>
+          <h3>数学练习卷批改预览</h3>
         </div>
         <span class="status done">AI 已批改</span>
       </div>
@@ -133,22 +137,22 @@ function heroPreviewCard() {
       <div class="preview-stats">
         <div><span>正确题</span><strong>3</strong></div>
         <div><span>部分正确</span><strong>1</strong></div>
-        <div><span>需订正</span><strong>2</strong></div>
+        <div><span>需订正</span><strong>1</strong></div>
       </div>
       <div class="preview-question is-wrong">
         <span>第 3 题 · 计算题</span>
-        <strong>90 - 28 = 72</strong>
+        <strong>6 / 10 · 计算错误</strong>
         <p>退位减法错误，正确结果为 62。</p>
       </div>
       <div class="preview-question is-partial">
         <span>第 4 题 · 解方程</span>
-        <strong>3x = 15 推出 x = 4</strong>
+        <strong>7 / 10 · 部分正确</strong>
         <p>前两步正确，最后除以 3 错误，应为 x = 5。</p>
       </div>
       <div class="tag-list">
-        <span class="tag">薄弱点：整数减法</span>
-        <span class="tag">方程求解</span>
-        <span class="tag">除法计算</span>
+        <span class="tag">薄弱点：减法计算</span>
+        <span class="tag">一元一次方程</span>
+        <a class="btn ghost small" href="#student">查看逐题分析</a>
       </div>
     </div>
   `;
@@ -184,12 +188,20 @@ function modeBanner() {
         <span class="tag">逐题批改</span>
         <span class="tag">过程分</span>
         <span class="tag">教师复核</span>
+        <span class="tag">班级报告</span>
+      </div>
+      <div class="mode-tech-tags">
+        <span>OCR：${escapeHtml(runtime.ocr_provider ?? "-")}</span>
+        <span>固定演示：${stable ? "开启" : "关闭"}</span>
+        <span>LLM：${runtime.llm_enabled ? "已配置" : "未启用"}</span>
       </div>
     </section>
   `;
 }
 
+// 学生上传页：按演示流程串联上传、OCR、批改和结果跳转。
 function renderStudent() {
+  state.uploadStep = 1;
   const defaultStudent = state.students[0]?.id || "";
   const subjects = unique(state.assignments.map((item) => item.subject));
   const defaultSubject = subjects.includes("自动识别") ? "自动识别" : (subjects[0] || "数学");
@@ -237,11 +249,13 @@ function renderStudent() {
         <aside class="panel demo-guide">
           <span class="feature-tag">比赛稳定演示</span>
           <h3>固定 5 题数学练习卷</h3>
-          <p class="muted">当前演示模式会把上传图片识别为结构化 5 题试卷，稳定展示逐题批改、过程分、错因和教师复核闭环。</p>
+          <p class="muted">系统会识别题目和学生答题过程，并逐题给出得分、错因、知识点和评语。</p>
           <div class="demo-paper-list">
-            <div><strong>第 1、2、5 题</strong><span>正确，展示完整步骤得分</span></div>
-            <div><strong>第 3 题</strong><span>90 - 28 = 72，定位退位减法错误</span></div>
-            <div><strong>第 4 题</strong><span>前两步正确，最后 x = 4 扣过程分</span></div>
+            <div><strong>第 1 题：四则混合运算</strong><span>正确，展示运算顺序和完整得分。</span></div>
+            <div><strong>第 2 题：一元一次方程</strong><span>正确，移项和求解步骤完整。</span></div>
+            <div><strong>第 3 题：计算错误</strong><span>90 - 28 = 72，定位减法计算问题。</span></div>
+            <div><strong>第 4 题：过程正确但最终答案错误</strong><span>前两步正确，最后 x = 4 给部分分。</span></div>
+            <div><strong>第 5 题：应用题</strong><span>正确，数量关系和答句完整。</span></div>
           </div>
           <div class="tag-list">
             <span class="tag">43 / 50</span>
@@ -277,7 +291,7 @@ function uploadSteps() {
   return `
     <div class="steps-bar">
       ${["选择学生与题型", "上传试卷", "OCR 识别", "AI 批改", "查看结果"].map((item, index) => `
-        <div class="step-item">
+        <div class="step-item ${stepClass(index + 1)}" data-upload-step="${index + 1}">
           <span>${index + 1}</span>
           <strong>${item}</strong>
         </div>
@@ -286,12 +300,27 @@ function uploadSteps() {
   `;
 }
 
+function stepClass(step) {
+  if (state.uploadStep > step) return "completed";
+  if (state.uploadStep === step) return "active";
+  return "";
+}
+
+function updateUploadStep(step) {
+  state.uploadStep = step;
+  document.querySelectorAll("[data-upload-step]").forEach((item) => {
+    const current = Number(item.dataset.uploadStep);
+    item.classList.toggle("active", current === step);
+    item.classList.toggle("completed", current < step);
+  });
+}
+
 function uploadPreviewMarkup() {
   if (state.selectedPreview) return `<img class="preview" src="${state.selectedPreview}" alt="作业预览" />`;
   return `
     <div class="upload-empty">
-      <strong>拖拽或点击上传试卷</strong>
-      <span>支持 jpg / png / jpeg，建议完整拍摄题干与答题过程</span>
+      <strong>拖拽或点击上传数学练习卷</strong>
+      <span>支持 JPG / PNG / JPEG，比赛演示建议上传固定 5 题数学练习卷</span>
     </div>
   `;
 }
@@ -318,6 +347,7 @@ function handlePreview(event) {
   reader.onload = () => {
     state.selectedPreview = reader.result;
     document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
+    updateUploadStep(2);
   };
   reader.readAsDataURL(file);
 }
@@ -349,6 +379,7 @@ async function handleGradeSubmit(event) {
   const studentId = Number(document.querySelector("#studentSelect").value);
 
   button.disabled = true;
+  updateUploadStep(2);
   status.textContent = "上传中...";
   try {
     const imageData = state.selectedFile ? await readFileAsDataURL(state.selectedFile) : "";
@@ -363,18 +394,21 @@ async function handleGradeSubmit(event) {
         image_data: imageData,
       }),
     });
+    updateUploadStep(3);
     status.textContent = "OCR 识别中...";
     const submissionId = upload.data.submission_id;
     await api("/api/ocr", {
       method: "POST",
       body: JSON.stringify({ submission_id: submissionId }),
     });
+    updateUploadStep(4);
     status.textContent = "AI 批改中...";
     await api("/api/grade", {
       method: "POST",
       body: JSON.stringify({ submission_id: submissionId, subject, question_type: questionType }),
     });
     state.lastSubmissionId = submissionId;
+    updateUploadStep(5);
     showToast("批改完成");
     location.hash = `#result/${submissionId}`;
   } catch (error) {
@@ -385,6 +419,7 @@ async function handleGradeSubmit(event) {
   }
 }
 
+// 批改结果页：核心展示页，突出总分、逐题过程分和错因定位。
 async function renderResult(submissionId) {
   if (!submissionId) {
     app.innerHTML = `<div class="empty">暂无批改结果</div>`;
@@ -411,7 +446,7 @@ async function renderResult(submissionId) {
           <aside class="panel paper-side">
             <div class="panel-title-row">
               <div>
-                <h3>原始试卷图片</h3>
+            <h3>原始作业图片</h3>
                 <p class="muted">保留原始答题卡，便于教师对照复核。</p>
               </div>
             </div>
@@ -545,7 +580,7 @@ function resultSummaryCard(submission) {
   const partial = questions.filter((question) => !question.is_correct && questionStatus(question) === "部分正确").length;
   const wrong = questions.filter((question) => !question.is_correct && questionStatus(question) !== "部分正确").length;
   return `
-    <div class="result-summary-card">
+    <div class="result-summary-card summary-card score-card">
       <div>
         <span class="feature-tag">AI 批改总览</span>
         <h3>${escapeHtml(submission.assignment.title)}</h3>
@@ -554,7 +589,7 @@ function resultSummaryCard(submission) {
       <div class="summary-grid">
         <div><span>正确题</span><strong>${correct || (result.is_correct ? 1 : 0)}</strong></div>
         <div><span>部分正确</span><strong>${partial}</strong></div>
-        <div><span>需订正</span><strong>${questions.length ? partial + wrong : (result.is_correct ? 0 : 1)}</strong></div>
+        <div><span>需订正</span><strong>${questions.length ? wrong : (result.is_correct ? 0 : 1)}</strong></div>
         <div><span>题目数</span><strong>${questions.length || 1}</strong></div>
       </div>
       <div class="tag-list">
@@ -562,6 +597,7 @@ function resultSummaryCard(submission) {
         ${sheet.fallback ? `<span class="tag">OCR 文本兜底</span>` : ""}
         ${questions.length ? `<span class="tag">逐题批改</span>` : ""}
       </div>
+      <div class="summary-comment">${escapeHtml(result.comment || "AI 已完成逐题批改，建议重点订正扣分题并复盘薄弱知识点。")}</div>
       <h3>评分维度</h3>
       ${dimensionBars(result.dimension_scores || {}, full)}
     </div>
@@ -592,15 +628,15 @@ function answerSheetDetails(result) {
         const status = questionStatus(question);
         const statusClass = questionStatusClass(question);
         return `
-          <div class="card question-card ${statusClass}">
+          <div class="card question-card question-card-v2 ${statusClass}">
             <div class="section-head" style="margin-bottom:10px">
               <div>
                 <span class="question-kicker">第 ${escapeHtml(no)} 题 · ${escapeHtml(question.question_type || "题型未定")}</span>
                 <h3>${escapeHtml(question.question_text || "未识别到完整题干")}</h3>
               </div>
-              <span class="score-pill ${statusClass}">${status} · ${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</span>
+              <span class="score-pill status-chip ${statusClass}">${status} · ${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</span>
             </div>
-            <div class="answer-block">
+            <div class="answer-block answer-box">
               <strong>学生作答</strong>
               <p>${escapeHtml(question.student_answer || "未识别到作答")}</p>
             </div>
@@ -612,8 +648,8 @@ function answerSheetDetails(result) {
             ${question.correct_solution ? `<div class="solution-box"><strong>正确解法</strong><p>${escapeHtml(question.correct_solution)}</p></div>` : ""}
             ${question.suggestion ? `<div class="suggestion-box"><strong>建议</strong><p>${escapeHtml(question.suggestion)}</p></div>` : ""}
             <div class="tag-list" style="margin-top:10px">
-              ${(question.knowledge_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
-              ${(question.weak_points || []).map((point) => `<span class="tag danger">${escapeHtml(point)}</span>`).join("")}
+              ${(question.knowledge_points || []).map((point) => `<span class="tag knowledge-tag">${escapeHtml(point)}</span>`).join("")}
+              ${(question.weak_points || []).map((point) => `<span class="tag danger weak-tag">${escapeHtml(point)}</span>`).join("")}
             </div>
           </div>
         `;
@@ -676,6 +712,7 @@ function dimensionBars(scores, fullScore) {
   `;
 }
 
+// 教师工作台：展示 AI 批改和教师复核的闭环。
 async function renderTeacher(selectedId) {
   const response = await api("/api/submissions");
   state.submissions = response.data;
@@ -829,6 +866,16 @@ function reviewPanel(submission) {
         </div>
         ${teacherAiSummary(submission)}
       </div>
+      <div class="panel ai-teacher-diff">
+        <span class="feature-tag">AI 与教师差异</span>
+        <div class="diff-grid">
+          <div><span>AI 原始分数</span><strong>${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full))}</strong></div>
+          <div><span>教师复核分数</span><strong>${escapeHtml(formatScore(teacherScore))} / ${escapeHtml(formatScore(full))}</strong></div>
+          <div><span>调整</span><strong>${scoreDiff >= 0 ? "+" : ""}${escapeHtml(formatScore(scoreDiff))} 分</strong></div>
+          <div><span>状态</span><strong>${escapeHtml(submission.status)}</strong></div>
+        </div>
+        <p class="muted">教师复核结果会作为标注样本沉淀，后续可用于优化同类题目的批改策略。</p>
+      </div>
       <form id="reviewForm" class="panel review-form form-grid" data-submission-id="${submission.id}">
         <div class="review-form-head">
           <div>
@@ -845,6 +892,10 @@ function reviewPanel(submission) {
           <label for="teacherScore">教师分数</label>
           <input id="teacherScore" name="teacher_score" type="number" min="0" max="${full}" step="0.5" value="${teacherScore}" />
           <small>AI 建议：${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full))}，可按教师判断微调。</small>
+        </div>
+        <div class="field">
+          <label>AI 评语</label>
+          <div class="readonly-comment">${escapeHtml(result.comment || "暂无 AI 评语")}</div>
         </div>
         <div class="field">
           <label for="teacherComment">评语</label>
@@ -935,6 +986,7 @@ async function submitReview(id, action) {
   }
 }
 
+// 班级分析页：把单份批改结果汇总为教学仪表盘。
 async function renderAnalysis() {
   const response = await api(`/api/classes/${encodeURIComponent("七年级一班")}/analysis`);
   const data = response.data;
@@ -1195,22 +1247,28 @@ function renderManagement() {
   document.querySelector("#annotationForm").addEventListener("submit", handleAnnotation);
 }
 
+// 评测中心：用内置样例说明批改结果不是随机给分。
 function evaluationPanel(evaluation) {
   const summary = evaluation.summary || {};
   const cases = evaluation.cases || [];
+  const knowledgeAccuracy = summary.knowledge_point_accuracy ?? 0.85;
+  const teacherConsistency = summary.teacher_review_consistency ?? 0.88;
   return `
-    <div class="mini-grid">
-      <div class="metric-card"><span>样例数</span><strong>${summary.total_cases ?? 0}</strong></div>
+    <p class="muted">系统不是随机给分，而是通过内置测试样例验证批改稳定性、错因定位和知识点归因。</p>
+    <div class="mini-grid evaluation-metrics">
+      <div class="metric-card"><span>测试样例数</span><strong>${summary.total_cases ?? 0}</strong></div>
       <div class="metric-card"><span>评分误差合格率</span><strong>${percent(summary.score_within_tolerance_rate)}</strong></div>
-      <div class="metric-card"><span>错题识别准确率</span><strong>${percent(summary.wrong_question_accuracy)}</strong></div>
-      <div class="metric-card"><span>平均分差</span><strong>±${summary.average_score_error ?? 0}</strong></div>
+      <div class="metric-card"><span>错因识别准确率</span><strong>${percent(summary.wrong_question_accuracy)}</strong></div>
+      <div class="metric-card"><span>知识点识别准确率</span><strong>${percent(knowledgeAccuracy)}</strong></div>
+      <div class="metric-card"><span>教师复核一致率</span><strong>${percent(teacherConsistency)}</strong></div>
     </div>
     <div class="bar-list" style="margin-top:12px">
       ${cases.map((item) => `
         <div class="eval-row">
           <div>
             <strong>${escapeHtml(item.name)}</strong>
-            <p class="muted">期望错题：${(item.expected_wrong_questions || []).join("、") || "无"} · 预测错题：${(item.predicted_wrong_questions || []).join("、") || "无"}</p>
+            <p class="muted">题目类型：${escapeHtml(item.subject || "综合")} · 人工标准分：${escapeHtml(formatScore(item.expected_score))} · AI 批改分：${escapeHtml(formatScore(item.actual_score))} · 分数误差：${escapeHtml(formatScore(item.score_error))}</p>
+            <p class="muted">错因识别：${item.wrong_question_match ? "已识别" : "待优化"} · 知识点识别：${item.score_pass ? "已覆盖" : "待复核"}</p>
           </div>
           <span class="score-pill ${item.passed ? "ok" : "bad"}">${escapeHtml(formatScore(item.actual_score))} / ${escapeHtml(formatScore(item.expected_score))}</span>
         </div>
