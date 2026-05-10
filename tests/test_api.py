@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from backend.app.database import SessionLocal, init_db
 from backend.app.main import app
 from backend.app.models import Assignment, ClassRoom, Submission
+from backend.app.services.llm import normalize_answer_sheet_grading
 
 
 def cleanup_demo_rows():
@@ -87,6 +88,44 @@ class ApiFlowTest(unittest.TestCase):
         )
         self.assertEqual(bulk.status_code, 200)
         self.assertEqual(bulk.json()["data"]["count"], 1)
+
+    def test_answer_sheet_normalization(self):
+        raw = {
+            "score": 15,
+            "full_score": 20,
+            "summary": "整张答题卡包含两道题。",
+            "comment": "整体表现不错，但第二题需要订正。",
+            "suggestion": "复习移项和过去时。",
+            "common_weak_points": ["移项", "一般过去时"],
+            "questions": [
+                {
+                    "question_no": "1",
+                    "subject": "数学",
+                    "question_type": "计算题",
+                    "question_text": "解方程 2x+3=7",
+                    "student_answer": "x=2",
+                    "score": 10,
+                    "full_score": 10,
+                    "is_correct": True,
+                    "knowledge_points": ["一元一次方程"],
+                },
+                {
+                    "question_no": "2",
+                    "subject": "英语",
+                    "question_type": "作文",
+                    "student_answer": "I go to park.",
+                    "score": 5,
+                    "full_score": 10,
+                    "mistakes": [{"step": "I go", "error": "过去经历应使用过去时。"}],
+                    "weak_points": ["一般过去时"],
+                },
+            ],
+        }
+        result = normalize_answer_sheet_grading(raw, "kimi", "kimi-k2.5")
+        self.assertEqual(result["score"], 15)
+        self.assertEqual(result["full_score"], 20)
+        self.assertEqual(len(result["ai_metadata"]["answer_sheet"]["questions"]), 2)
+        self.assertIn("一般过去时", result["weak_points"])
 
 
 if __name__ == "__main__":

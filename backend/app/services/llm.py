@@ -162,6 +162,85 @@ class LLMClient:
             model=_resolve_vision_model(self.provider, self.vision_model),
         )
 
+    def grade_answer_sheet(self, image_path: Path, ocr_text: str, assignment: Assignment) -> LLMResult:
+        if not self.vision_available:
+            raise RuntimeError("vision LLM is not configured")
+        user_prompt = {
+            "task": (
+                "请批改这张完整未批改答题卡。图片中包含题目内容和学生作答过程，"
+                "不得依赖网站题库，不得把示例题或标准答案当作学生答案。"
+            ),
+            "requirements": [
+                "先识别每一道题的题号、学科、题型、完整题干、学生作答内容。",
+                "根据题干和学生作答自行判断合理标准答案或评分要点；如果题目缺少必要信息，请在 warnings 中说明。",
+                "数学题要分析解题步骤、关键公式、中间计算和最终答案，支持部分分。",
+                "语文/英语等主观题要按内容、结构、语言表达、语法/错别字或拼写等维度评分。",
+                "逐题输出得分、满分、是否正确、错因、正确解法或修改示例、知识点、薄弱点、个性化建议。",
+                "最后汇总整张答题卡总分、总满分、整体评语、共性薄弱点和后续学习建议。",
+            ],
+            "ocr_text_reference": ocr_text,
+            "default_full_score_policy": "若图片没有标明分值，请根据题型和难度给出合理满分，并在 warnings 中说明。",
+            "output_schema": {
+                "detected_subjects": ["数学", "英语"],
+                "score": "整张答题卡总得分，数字",
+                "full_score": "整张答题卡总满分，数字",
+                "is_correct": "是否全对，布尔值",
+                "summary": "整体批改分析",
+                "comment": "面向学生的整体个性化评语",
+                "suggestion": "整体学习建议",
+                "common_weak_points": ["高频薄弱点"],
+                "warnings": ["识别或评分不确定说明"],
+                "questions": [
+                    {
+                        "question_no": "题号",
+                        "subject": "学科",
+                        "question_type": "题型",
+                        "question_text": "完整题干",
+                        "student_answer": "学生作答",
+                        "score": "本题得分，数字",
+                        "full_score": "本题满分，数字",
+                        "is_correct": "是否正确，布尔值",
+                        "process_analysis": "步骤/内容分析",
+                        "mistakes": [{"step": "出错步骤或原句", "error": "错误原因"}],
+                        "knowledge_points": ["知识点"],
+                        "weak_points": ["薄弱点"],
+                        "correct_solution": "正确解法、参考答案或修改示例",
+                        "comment": "本题反馈",
+                        "suggestion": "本题建议"
+                    }
+                ]
+            },
+            "output_rule": "只输出一个合法 JSON 对象，不要输出 Markdown 代码块。",
+        }
+        payload = {
+            "model": _resolve_vision_model(self.provider, self.vision_model),
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一名严谨的多学科阅卷老师，能够从整张答题卡图片中识别题目和学生答题过程，"
+                        "并按照教学评分标准逐题批改。你的输出必须是可解析 JSON。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": _image_data_url(image_path)}},
+                        {"type": "text", "text": json.dumps(user_prompt, ensure_ascii=False)},
+                    ],
+                },
+            ],
+        }
+        data = self._post_chat_completions(payload)
+        content = data["choices"][0]["message"]["content"]
+        return LLMResult(
+            data=_extract_json(content),
+            raw_text=content,
+            provider=self.provider,
+            model=_resolve_vision_model(self.provider, self.vision_model),
+        )
+
     def _post_chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = self.base_url.rstrip("/") + "/chat/completions"
         req = urllib.request.Request(
@@ -218,6 +297,79 @@ def normalize_llm_grading(raw: dict[str, Any], rule_result: dict[str, Any], subj
     result["ai_engine"] = f"LLM:{settings.llm_provider}"
     result["ai_metadata"] = {"llm_provider": settings.llm_provider}
     return result
+
+
+def normalize_answer_sheet_grading(raw: dict[str, Any], provider: str, model: str) -> dict[str, Any]:
+    questions = raw.get("questions") if isinstance(raw.get("questions"), list) else []
+    score = _number(raw.get("score"), sum(_number(q.get("score"), 0) for q in questions if isinstance(q, dict)))
+    full_score = _number(raw.get("full_score"), sum(_number(q.get("full_score"), 0) for q in questions if isinstance(q, dict)) or 100)
+    mistakes: list[dict[str, Any]] = []
+    knowledge_points: list[str] = []
+    weak_points: list[str] = []
+    dimension_scores: dict[str, float] = {}
+    correct_solutions: list[str] = []
+
+    for index, question in enumerate(questions, start=1):
+        if not isinstance(question, dict):
+            continue
+        question_no = str(question.get("question_no") or index)
+        q_score = _number(question.get("score"), 0)
+        q_full = _number(question.get("full_score"), 0)
+        dimension_scores[f"第{question_no}题"] = q_score
+        for mistake in _list(question.get("mistakes"), []):
+            if isinstance(mistake, dict):
+                mistakes.append(
+                    {
+                        "step": f"第{question_no}题：{mistake.get('step') or question.get('student_answer') or '作答'}",
+                        "error": mistake.get("error") or mistake.get("reason") or "存在需要订正的问题。",
+                    }
+                )
+            else:
+                mistakes.append({"step": f"第{question_no}题", "error": str(mistake)})
+        knowledge_points.extend(str(item) for item in _list(question.get("knowledge_points"), []) if item)
+        weak_points.extend(str(item) for item in _list(question.get("weak_points"), []) if item)
+        if question.get("correct_solution"):
+            correct_solutions.append(f"第{question_no}题：{question.get('correct_solution')}")
+        if q_full and q_score < q_full and not _list(question.get("mistakes"), []):
+            mistakes.append({"step": f"第{question_no}题", "error": question.get("process_analysis") or "本题未得满分，请查看分析。"})
+
+    common_weak = _list(raw.get("common_weak_points"), [])
+    weak_points.extend(str(item) for item in common_weak if item)
+    is_correct = _bool(raw.get("is_correct"), full_score > 0 and score >= full_score)
+
+    return {
+        "subject": "自动识别",
+        "score": score,
+        "full_score": full_score,
+        "is_correct": is_correct,
+        "process_analysis": str(raw.get("summary") or "已按整张答题卡逐题完成批改。"),
+        "content_analysis": str(raw.get("summary") or ""),
+        "structure_analysis": "",
+        "language_analysis": "",
+        "mistakes": mistakes,
+        "errors": [],
+        "strengths": _list(raw.get("strengths"), []),
+        "knowledge_points": unique_list(knowledge_points),
+        "weak_points": unique_list(weak_points),
+        "dimension_scores": dimension_scores,
+        "correct_solution": "\n".join(correct_solutions),
+        "revised_example": None,
+        "comment": str(raw.get("comment") or "本次答题卡已完成逐题批改，请重点查看扣分题目的错因和建议。"),
+        "suggestion": str(raw.get("suggestion") or "建议先订正错题，再按薄弱知识点进行针对性练习。"),
+        "ai_engine": f"LLM:{provider}:{model}",
+        "ai_metadata": {
+            "llm_provider": provider,
+            "llm_model": model,
+            "answer_sheet": {
+                "detected_subjects": _list(raw.get("detected_subjects"), []),
+                "score": score,
+                "full_score": full_score,
+                "warnings": _list(raw.get("warnings"), []),
+                "questions": questions,
+                "summary": raw.get("summary") or "",
+            },
+        },
+    }
 
 
 def _resolve_base_url(provider: str, custom: str) -> str:
@@ -303,3 +455,13 @@ def _list(value: Any, default: list) -> list:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return default
+
+
+def unique_list(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result

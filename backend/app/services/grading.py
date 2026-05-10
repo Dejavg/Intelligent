@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ..models import Assignment
 from ..settings import settings
-from .llm import LLMClient, normalize_llm_grading
+from .llm import LLMClient, normalize_answer_sheet_grading, normalize_llm_grading
 
 
 class GradingService:
@@ -20,6 +20,9 @@ class GradingService:
         assignment: Assignment,
         image_path: Path | None = None,
     ) -> dict:
+        if self._is_answer_sheet(subject, question_type, assignment):
+            return self._grade_answer_sheet(ocr_text, assignment, image_path)
+
         if not ocr_text.strip() and not (settings.llm_enabled and settings.llm_grade_from_image and image_path):
             return self._empty_result(subject, assignment)
 
@@ -46,12 +49,39 @@ class GradingService:
                 rule_result["ai_metadata"] = {"llm_fallback_reason": str(exc)}
         return rule_result
 
+    def _grade_answer_sheet(self, ocr_text: str, assignment: Assignment, image_path: Path | None) -> dict:
+        if not image_path:
+            result = self._empty_result("自动识别", assignment)
+            result["process_analysis"] = "整张答题卡批改需要上传包含题目与作答的图片。"
+            return result
+        if not (settings.llm_enabled and self.llm_client.vision_available):
+            result = self._empty_result("自动识别", assignment)
+            result["process_analysis"] = "整张答题卡批改需要启用视觉大模型。"
+            result["suggestion"] = "请在 .env 中配置 LLM_ENABLED=true、OCR_PROVIDER=llm、KIMI_API_KEY 和 LLM_VISION_MODEL。"
+            return result
+        try:
+            llm_result = self.llm_client.grade_answer_sheet(image_path, ocr_text, assignment)
+            return normalize_answer_sheet_grading(llm_result.data, llm_result.provider, llm_result.model)
+        except Exception as exc:
+            result = self._empty_result("自动识别", assignment)
+            result["process_analysis"] = f"整张答题卡大模型批改失败：{exc}"
+            result["suggestion"] = "请检查大模型接口、图片清晰度、图片大小和模型是否支持视觉输入。"
+            result["ai_metadata"] = {"llm_fallback_reason": str(exc)}
+            return result
+
     def _grade_by_rule(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment) -> dict:
         if subject == "数学":
             return self._grade_math(ocr_text, assignment)
         if subject == "英语":
             return self._grade_english(ocr_text, assignment)
         return self._grade_chinese(ocr_text, assignment)
+
+    def _is_answer_sheet(self, subject: str, question_type: str, assignment: Assignment) -> bool:
+        return (
+            subject in {"自动识别", "综合"}
+            or question_type in {"答题卡", "整张答题卡"}
+            or assignment.question_type in {"答题卡", "整张答题卡"}
+        )
 
     def _grade_math(self, text: str, assignment: Assignment) -> dict:
         normalized = _compact(text)

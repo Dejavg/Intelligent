@@ -116,14 +116,14 @@ function featureCard(title, text) {
 function renderStudent() {
   const defaultStudent = state.students[0]?.id || "";
   const subjects = unique(state.assignments.map((item) => item.subject));
-  const defaultSubject = subjects[0] || "数学";
+  const defaultSubject = subjects.includes("自动识别") ? "自动识别" : (subjects[0] || "数学");
   const types = getTypes(defaultSubject);
   app.innerHTML = `
     <section>
       <div class="section-head">
         <div>
           <h2>学生上传</h2>
-          <p>选择作业类型并上传图片，系统会自动执行 OCR 和 AI 批改。</p>
+          <p>上传包含完整题目和学生作答的未批改答题卡，系统会自动识别题目、题型、学科并逐题批改。</p>
         </div>
         <a class="btn ghost" href="#teacher">查看教师端</a>
       </div>
@@ -134,7 +134,7 @@ function renderStudent() {
             <select id="studentSelect">${state.students.map((student) => `<option value="${student.id}" ${student.id === defaultStudent ? "selected" : ""}>${student.name} · ${student.class_name}</option>`).join("")}</select>
           </div>
           <div class="field">
-            <label for="subjectSelect">学科</label>
+            <label for="subjectSelect">学科 / 模式</label>
             <select id="subjectSelect">${subjects.map((subject) => `<option value="${subject}" ${subject === defaultSubject ? "selected" : ""}>${subject}</option>`).join("")}</select>
           </div>
           <div class="field">
@@ -338,7 +338,7 @@ async function rerunCurrentSubmission(event) {
 
 function scorePanel(submission) {
   const score = submission.effective_score ?? submission.ai_score ?? 0;
-  const full = submission.assignment.full_score;
+  const full = submission.grading_result?.full_score ?? submission.assignment.full_score;
   const statusClass = statusClassName(submission.status);
   return `
     <div class="score-panel">
@@ -358,6 +358,7 @@ function gradingDetail(submission) {
     </div>
     <h3>评分维度</h3>
     ${dimensionBars(result.dimension_scores || {}, submission.assignment.full_score)}
+    ${answerSheetDetails(result)}
     <h3>${isComposition ? "内容与表达分析" : "解题过程分析"}</h3>
     <p class="muted">${escapeHtml(result.process_analysis || result.content_analysis || "暂无分析")}</p>
     ${result.structure_analysis ? `<p class="muted">${escapeHtml(result.structure_analysis)}</p>` : ""}
@@ -373,6 +374,43 @@ function gradingDetail(submission) {
     <p class="muted">${escapeHtml(result.comment || "暂无评语")}</p>
     <h3>学习建议</h3>
     <p class="muted">${escapeHtml(result.suggestion || "暂无建议")}</p>
+  `;
+}
+
+function answerSheetDetails(result) {
+  const sheet = result.ai_metadata?.answer_sheet;
+  const questions = Array.isArray(sheet?.questions) ? sheet.questions : [];
+  if (!questions.length) return "";
+  return `
+    <h3>逐题批改</h3>
+    <div class="bar-list">
+      ${questions.map((question, index) => {
+        const no = question.question_no || index + 1;
+        const score = question.score ?? 0;
+        const full = question.full_score ?? "-";
+        const mistakes = Array.isArray(question.mistakes) ? question.mistakes : [];
+        return `
+          <div class="card">
+            <div class="section-head" style="margin-bottom:10px">
+              <div>
+                <strong>第 ${escapeHtml(no)} 题 · ${escapeHtml(question.subject || "自动识别")} · ${escapeHtml(question.question_type || "题型未定")}</strong>
+                <p class="muted">${escapeHtml(question.question_text || "未识别到完整题干")}</p>
+              </div>
+              <span class="tag">${escapeHtml(score)} / ${escapeHtml(full)}</span>
+            </div>
+            <p class="muted"><strong>学生作答：</strong>${escapeHtml(question.student_answer || "未识别到作答")}</p>
+            <p class="muted"><strong>分析：</strong>${escapeHtml(question.process_analysis || question.comment || "暂无分析")}</p>
+            ${mistakes.length ? `<div class="bar-list">${mistakes.map((item) => `<p class="muted"><strong>${escapeHtml(item.step || "问题")}：</strong>${escapeHtml(item.error || item.reason || item)}</p>`).join("")}</div>` : ""}
+            ${question.correct_solution ? `<div class="code-box">${escapeHtml(question.correct_solution)}</div>` : ""}
+            <div class="tag-list" style="margin-top:10px">
+              ${(question.knowledge_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
+              ${(question.weak_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
+            </div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+    ${sheet.warnings?.length ? `<h3>整卷识别提示</h3><div class="card">${sheet.warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
   `;
 }
 

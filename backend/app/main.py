@@ -541,13 +541,15 @@ def _grading_to_dict(result: GradingResult | None) -> dict | None:
     if not result:
         return None
     submission = result.submission
+    answer_sheet = (result.ai_metadata or {}).get("answer_sheet") if isinstance(result.ai_metadata, dict) else None
+    result_full_score = answer_sheet.get("full_score") if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None else None
     return {
         "id": result.id,
         "submission_id": result.submission_id,
         "score": submission.teacher_score if submission and submission.teacher_score is not None else (submission.ai_score if submission else None),
         "ai_score": submission.ai_score if submission else None,
         "teacher_score": submission.teacher_score if submission else None,
-        "full_score": submission.assignment.full_score if submission and submission.assignment else None,
+        "full_score": result_full_score if result_full_score is not None else (submission.assignment.full_score if submission and submission.assignment else None),
         "is_correct": result.is_correct,
         "process_analysis": result.process_analysis,
         "content_analysis": result.content_analysis,

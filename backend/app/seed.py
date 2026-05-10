@@ -11,6 +11,15 @@ STUDENTS = [
 
 ASSIGNMENTS = [
     {
+        "title": "AI 自动识别整张答题卡",
+        "subject": "自动识别",
+        "question_type": "答题卡",
+        "question": "上传包含完整题目内容与学生答题过程的未批改答题卡，由 AI 自动识别题目、题型、学科和学生作答并逐题批改。",
+        "standard_answer": "由 AI 根据图片中的题干与作答进行逐题分析和评分。",
+        "full_score": 100,
+        "knowledge_points": ["自动识别", "整张答题卡", "多学科批改"],
+    },
+    {
         "title": "一元一次方程基础练习",
         "subject": "数学",
         "question_type": "计算题",
@@ -74,6 +83,11 @@ def seed_data(db: Session) -> None:
 
     if db.query(Assignment).count() == 0:
         db.add_all(Assignment(**assignment) for assignment in ASSIGNMENTS)
+    else:
+        for assignment in ASSIGNMENTS:
+            exists = db.query(Assignment).filter(Assignment.title == assignment["title"]).first()
+            if not exists:
+                db.add(Assignment(**assignment))
 
     if db.query(KnowledgePoint).count() == 0:
         db.add_all(
