@@ -12,6 +12,10 @@ const state = {
   selectedFile: null,
   selectedPreview: "",
   lastSubmissionId: null,
+  quickDemoRunning: false,
+  ocrTestFile: null,
+  ocrTestPreview: "",
+  ocrTest: null,
 };
 
 document.addEventListener("DOMContentLoaded", init);
@@ -79,8 +83,10 @@ function renderHome() {
         <p>面向学生和教师的作业批改 Demo，覆盖图片上传、OCR 识别、数学过程分、主观题评价、知识点薄弱分析和班级学情报告。</p>
         <div class="hero-actions">
           <a class="btn xl" href="#student">进入 Demo</a>
+          <button id="quickDemoHome" class="btn secondary xl" type="button" data-quick-demo data-quick-demo-label="快速演示：使用固定 5 题数学卷">快速演示：使用固定 5 题数学卷</button>
           <a class="btn secondary xl" href="#teacher">教师工作台</a>
         </div>
+        <div id="quickDemoStatus" class="quick-demo-status" aria-live="polite"></div>
         <div class="hero-proof">
           <span>固定 5 题数学卷</span>
           <span>43 / 50 稳定输出</span>
@@ -115,6 +121,7 @@ function renderHome() {
       </div>
     </section>
   `;
+  document.querySelector("#quickDemoHome")?.addEventListener("click", () => runQuickDemo("home"));
 }
 
 function featureCard(title, text) {
@@ -213,7 +220,10 @@ function renderStudent() {
           <h2>学生上传</h2>
           <p>上传包含完整题目和学生作答的未批改答题卡，系统会自动识别题目、题型、学科并逐题批改。</p>
         </div>
-        <a class="btn ghost" href="#teacher">查看教师端</a>
+        <div class="button-row">
+          <button id="quickDemoStudent" class="btn secondary" type="button" data-quick-demo data-quick-demo-label="快速演示：使用固定 5 题数学卷">快速演示：使用固定 5 题数学卷</button>
+          <a class="btn ghost" href="#teacher">查看教师端</a>
+        </div>
       </div>
       ${modeBanner()}
       ${uploadSteps()}
@@ -285,6 +295,7 @@ function renderStudent() {
   document.querySelector("#uploadDrop").addEventListener("dragleave", handleUploadDrag);
   document.querySelector("#uploadDrop").addEventListener("drop", handleUploadDrop);
   uploadForm.addEventListener("submit", handleGradeSubmit);
+  document.querySelector("#quickDemoStudent")?.addEventListener("click", () => runQuickDemo("student"));
 }
 
 function uploadSteps() {
@@ -419,6 +430,194 @@ async function handleGradeSubmit(event) {
   }
 }
 
+async function runQuickDemo(source = "home") {
+  if (state.quickDemoRunning) return;
+  const student = findDefaultStudent();
+  const assignment = findDemoAssignment();
+  if (!student || !assignment) {
+    showToast("缺少张三学生或自动识别答题卡作业，请先确认示例数据已初始化。");
+    return;
+  }
+
+  state.quickDemoRunning = true;
+  applyDemoSelections(student, assignment);
+  try {
+    setQuickDemoStage("正在上传演示试卷", 2);
+    const upload = await api("/api/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        student_id: student.id,
+        subject: assignment.subject || "自动识别",
+        question_type: assignment.question_type || "答题卡",
+        assignment_id: assignment.id,
+        image_name: "demo-fixed-math-paper.png",
+        image_data: createDemoPaperImageData(),
+      }),
+    });
+
+    const submissionId = upload.data.submission_id;
+    setQuickDemoStage("正在进行 OCR 识别", 3);
+    await api("/api/ocr", {
+      method: "POST",
+      body: JSON.stringify({ submission_id: submissionId }),
+    });
+
+    setQuickDemoStage("正在进行 AI 逐题批改", 4);
+    await api("/api/grade", {
+      method: "POST",
+      body: JSON.stringify({
+        submission_id: submissionId,
+        subject: assignment.subject || "自动识别",
+        question_type: assignment.question_type || "答题卡",
+      }),
+    });
+
+    setQuickDemoStage("正在生成结果", 5);
+    state.lastSubmissionId = submissionId;
+    showToast(source === "home" ? "快速演示已生成，正在进入批改结果" : "演示批改完成");
+    location.hash = `#result/${submissionId}`;
+  } catch (error) {
+    showToast(`一键演示失败：${error.message}`);
+    const status = document.querySelector("#quickDemoStatus") || document.querySelector("#uploadStatus");
+    if (status) status.textContent = `演示失败：${error.message}`;
+  } finally {
+    state.quickDemoRunning = false;
+    resetQuickDemoButtons();
+  }
+}
+
+function setQuickDemoStage(message, step) {
+  if (step) updateUploadStep(step);
+  document.querySelectorAll("[data-quick-demo]").forEach((button) => {
+    button.disabled = true;
+    button.textContent = message;
+  });
+  const status = document.querySelector("#quickDemoStatus") || document.querySelector("#uploadStatus");
+  if (status) status.textContent = message;
+}
+
+function resetQuickDemoButtons() {
+  document.querySelectorAll("[data-quick-demo]").forEach((button) => {
+    button.disabled = false;
+    button.textContent = button.dataset.quickDemoLabel || "快速演示：使用固定 5 题数学卷";
+  });
+}
+
+function applyDemoSelections(student, assignment) {
+  const studentSelect = document.querySelector("#studentSelect");
+  const subjectSelect = document.querySelector("#subjectSelect");
+  const typeSelect = document.querySelector("#typeSelect");
+  if (studentSelect) studentSelect.value = String(student.id);
+  if (subjectSelect && typeSelect) {
+    subjectSelect.value = assignment.subject;
+    const nextTypes = getTypes(assignment.subject);
+    typeSelect.innerHTML = nextTypes.map((type) => `<option value="${type}">${type}</option>`).join("");
+    typeSelect.value = assignment.question_type;
+    const assignmentInfoNode = document.querySelector("#assignmentInfo");
+    if (assignmentInfoNode) assignmentInfoNode.innerHTML = assignmentInfo(assignment.subject, assignment.question_type);
+  }
+  if (state.selectedPreview) {
+    state.selectedPreview = "";
+    state.selectedFile = null;
+    const previewWrap = document.querySelector("#previewWrap");
+    if (previewWrap) previewWrap.innerHTML = uploadPreviewMarkup();
+  }
+}
+
+function findDefaultStudent() {
+  return (
+    state.students.find((student) => student.name === "张三" && student.role !== "teacher") ||
+    state.students.find((student) => student.role !== "teacher") ||
+    state.students[0]
+  );
+}
+
+function findDemoAssignment() {
+  return (
+    state.assignments.find((item) => item.subject === "自动识别" && ["答题卡", "整张答题卡"].includes(item.question_type)) ||
+    state.assignments.find((item) => item.question_type === "答题卡") ||
+    state.assignments[0]
+  );
+}
+
+function createDemoPaperImageData() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 1280;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#eaf2ff";
+  ctx.fillRect(0, 0, canvas.width, 86);
+  ctx.fillStyle = "#111827";
+  ctx.font = "700 28px Microsoft YaHei, Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("数学练习卷", canvas.width / 2, 54);
+  ctx.textAlign = "left";
+  ctx.font = "20px Microsoft YaHei, Arial";
+  ctx.fillText("姓名：张三      班级：七年级一班      日期：2026-05-10", 70, 125);
+  const lines = [
+    "1. 计算：36 ÷ 4 + 5 × 2",
+    "   36 ÷ 4 = 9",
+    "   5 × 2 = 10",
+    "   9 + 10 = 19",
+    "   答：19",
+    "",
+    "2. 解方程：2x + 3 = 11",
+    "   2x = 11 - 3",
+    "   2x = 8",
+    "   x = 4",
+    "   答：x = 4",
+    "",
+    "3. 计算：15 × 6 - 28",
+    "   15 × 6 = 90",
+    "   90 - 28 = 72",
+    "   答：72",
+    "",
+    "4. 解方程：3x - 5 = 10",
+    "   3x = 10 + 5",
+    "   3x = 15",
+    "   x = 4",
+    "   答：x = 4",
+    "",
+    "5. 应用题：小明买了 3 支铅笔，每支 2 元，又买了 1 本笔记本 5 元，一共用了多少钱？",
+    "   3 × 2 = 6（元）",
+    "   6 + 5 = 11（元）",
+    "   答：一共用了 11 元。",
+  ];
+  ctx.font = "22px Microsoft YaHei, Arial";
+  ctx.fillStyle = "#0f172a";
+  let y = 180;
+  lines.forEach((line) => {
+    if (line.startsWith("5. 应用题")) {
+      wrapCanvasText(ctx, line, 70, y, 760, 32);
+      y += 64;
+      return;
+    }
+    ctx.fillText(line, 70, y);
+    y += line ? 36 : 20;
+  });
+  ctx.strokeStyle = "#dbe7fb";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(36, 36, canvas.width - 72, canvas.height - 72);
+  return canvas.toDataURL("image/png");
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+  let line = "";
+  for (const char of text) {
+    const testLine = line + char;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      ctx.fillText(line, x, y);
+      line = char;
+      y += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) ctx.fillText(line, x, y);
+}
+
 // 批改结果页：核心展示页，突出总分、逐题过程分和错因定位。
 async function renderResult(submissionId) {
   if (!submissionId) {
@@ -467,6 +666,7 @@ async function renderResult(submissionId) {
       </section>
     `;
     document.querySelector("#regradeCurrent")?.addEventListener("click", rerunCurrentSubmission);
+    bindQuestionNavigation();
   } catch (error) {
     app.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
   }
@@ -540,9 +740,10 @@ function ocrPreview(submission) {
 function gradingDetail(submission) {
   const result = submission.grading_result || {};
   const isComposition = submission.subject === "英语" || submission.subject === "语文";
-  const sheet = result.ai_metadata?.answer_sheet || {};
   return `
     ${resultSummaryCard(submission)}
+    ${presentationGuide(submission)}
+    ${questionQuickNav(result)}
     ${answerSheetDetails(result)}
     <div class="result-analysis-card">
       <h3>${isComposition ? "内容与表达分析" : "整体过程分析"}</h3>
@@ -566,6 +767,62 @@ function gradingDetail(submission) {
       <p class="muted">${escapeHtml(result.comment || "暂无评语")}</p>
       <h3>学习建议</h3>
       <p class="muted">${escapeHtml(result.suggestion || "暂无建议")}</p>
+    </div>
+  `;
+}
+
+function presentationGuide(submission) {
+  const result = submission.grading_result || {};
+  const sheet = result.ai_metadata?.answer_sheet || {};
+  const questions = Array.isArray(sheet.questions) ? sheet.questions : [];
+  if (!questions.length) return "";
+  const score = result.score ?? sheet.score ?? submission.effective_score ?? 0;
+  const full = result.full_score ?? sheet.full_score ?? submission.grading_full_score ?? submission.assignment.full_score;
+  return `
+    <div class="presentation-guide">
+      <div class="panel-title-row">
+        <div>
+          <span class="feature-tag">演示讲解模式</span>
+          <h3>推荐讲解顺序</h3>
+        </div>
+        <span class="score-pill ok">${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</span>
+      </div>
+      <ol class="guide-timeline">
+        <li><span>1</span><p>先看总分：<strong>${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</strong>，说明系统已完成整张答题卡逐题批改。</p></li>
+        <li><span>2</span><p>讲第 3 题：学生写 <strong>90 - 28 = 72</strong>，系统指出正确结果应为 <strong>62</strong>。 <button class="link-button" type="button" data-scroll-question="${safeDomId(3)}">定位第 3 题</button></p></li>
+        <li><span>3</span><p>讲第 4 题：前两步正确，但 <strong>3x = 15 推出 x = 4</strong> 错误，系统给过程分 <strong>7 / 10</strong>。 <button class="link-button" type="button" data-scroll-question="${safeDomId(4)}">定位第 4 题</button></p></li>
+        <li><span>4</span><p>查看薄弱点：减法计算、方程求解、除法计算。</p></li>
+        <li><span>5</span><p>切换到教师工作台展示教师复核，再进入班级分析展示班级薄弱点和教学建议。</p></li>
+      </ol>
+    </div>
+  `;
+}
+
+function questionQuickNav(result) {
+  const sheet = result.ai_metadata?.answer_sheet;
+  const questions = Array.isArray(sheet?.questions) ? sheet.questions : [];
+  if (!questions.length) return "";
+  return `
+    <div class="question-nav-card">
+      <div class="question-nav-title">
+        <strong>题目快速导航</strong>
+        <span>点击题号定位重点题</span>
+      </div>
+      <div class="question-nav">
+        ${questions.map((question, index) => {
+          const no = question.question_no || index + 1;
+          const status = questionStatus(question);
+          const statusClass = questionStatusClass(question);
+          const focusClass = Number(no) === 3 || Number(no) === 4 ? "is-focus" : "";
+          return `
+            <button class="question-nav-item ${statusClass} ${focusClass}" type="button" data-scroll-question="${safeDomId(no)}">
+              <strong>第 ${escapeHtml(no)} 题</strong>
+              <span>${status}</span>
+              <em>${escapeHtml(formatScore(question.score ?? 0))} / ${escapeHtml(formatScore(question.full_score ?? "-"))}</em>
+            </button>
+          `;
+        }).join("")}
+      </div>
     </div>
   `;
 }
@@ -627,8 +884,9 @@ function answerSheetDetails(result) {
         const mistakes = Array.isArray(question.mistakes) ? question.mistakes : [];
         const status = questionStatus(question);
         const statusClass = questionStatusClass(question);
+        const domId = safeDomId(no);
         return `
-          <div class="card question-card question-card-v2 ${statusClass}">
+          <div id="question-${domId}" class="card question-card question-card-v2 ${statusClass}">
             <div class="section-head" style="margin-bottom:10px">
               <div>
                 <span class="question-kicker">第 ${escapeHtml(no)} 题 · ${escapeHtml(question.question_type || "题型未定")}</span>
@@ -657,6 +915,18 @@ function answerSheetDetails(result) {
     </div>
     ${sheet.warnings?.length ? `<h3>整卷识别提示</h3><div class="card">${sheet.warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
   `;
+}
+
+function bindQuestionNavigation() {
+  document.querySelectorAll("[data-scroll-question]").forEach((item) => {
+    item.addEventListener("click", () => {
+      const target = document.querySelector(`#question-${item.dataset.scrollQuestion}`);
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      target.classList.add("is-highlighted");
+      window.setTimeout(() => target.classList.remove("is-highlighted"), 1400);
+    });
+  });
 }
 
 function engineInfo(submission) {
@@ -1163,6 +1433,7 @@ function renderManagement() {
         </div>
         <button id="refreshManagement" class="btn ghost" type="button">刷新数据</button>
       </div>
+      ${ocrTestPanel()}
       <div class="analysis-grid">
         <form id="questionForm" class="panel form-grid">
           <h3>新增题库题目</h3>
@@ -1245,6 +1516,117 @@ function renderManagement() {
   document.querySelector("#classForm").addEventListener("submit", handleCreateClass);
   document.querySelector("#bulkForm").addEventListener("submit", handleBulkUpload);
   document.querySelector("#annotationForm").addEventListener("submit", handleAnnotation);
+  document.querySelector("#ocrTestInput")?.addEventListener("change", handleOcrTestPreview);
+  document.querySelector("#ocrTestForm")?.addEventListener("submit", handleOcrTestSubmit);
+}
+
+function ocrTestPanel() {
+  const runtime = state.runtime || {};
+  const stable = Boolean(runtime.demo_fixed_math_paper_ocr);
+  const warning = stable
+    ? "当前为比赛稳定演示模式。学生端答题卡会优先走固定 Demo OCR；本测试区用于隔离验证真实 OCR，不影响比赛演示流程。"
+    : "当前为真实 OCR 模式。若识别失败，请先检查 OCR_PROVIDER、模型配置、图片大小和 API Key。";
+  const keyWarning = runtime.ocr_provider === "llm" && !runtime.llm_has_key
+    ? `<div class="ocr-test-warning bad">当前 OCR_PROVIDER=llm 但未检测到 API Key，请填写 KIMI_API_KEY 或切回演示模式。</div>`
+    : "";
+  return `
+    <div class="panel ocr-test-panel">
+      <div class="panel-title-row">
+        <div>
+          <span class="feature-tag">真实能力验证</span>
+          <h3>真实 OCR 测试</h3>
+          <p class="muted">上传一张真实试卷图片，只执行 OCR，不自动批改，避免真实识别波动影响比赛主流程。</p>
+        </div>
+        <span class="status ${stable ? "wait" : "done"}">${stable ? "演示模式" : "真实模式"}</span>
+      </div>
+      <div class="runtime-grid">
+        ${runtimeItem("OCR_PROVIDER", runtime.ocr_provider ?? "-")}
+        ${runtimeItem("DEMO_FIXED_MATH_PAPER_OCR", runtime.demo_fixed_math_paper_ocr ? "true" : "false")}
+        ${runtimeItem("LLM_ENABLED", runtime.llm_enabled ? "true" : "false")}
+        ${runtimeItem("LLM_VISION_OCR", runtime.llm_vision_enabled ? "true" : "false")}
+        ${runtimeItem("LLM_HAS_KEY", runtime.llm_has_key ? "true" : "false")}
+        ${runtimeItem("OCR_FALLBACK_TO_MOCK", runtime.ocr_fallback_to_mock ? "true" : "false")}
+        ${runtimeItem("ALLOW_MOCK_FOR_UPLOADED_IMAGES", runtime.allow_mock_for_uploaded_images ? "true" : "false")}
+      </div>
+      <div class="ocr-test-warning">${warning}</div>
+      ${keyWarning}
+      <div class="ocr-test-grid">
+        <form id="ocrTestForm" class="form-grid">
+          <div class="field upload-field">
+            <label for="ocrTestInput">真实试卷图片</label>
+            <div class="upload-drop ocr-test-drop">
+              <input id="ocrTestInput" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" />
+              <div id="ocrTestPreview">${ocrTestPreviewMarkup()}</div>
+            </div>
+          </div>
+          <div class="button-row">
+            <button id="ocrTestBtn" class="btn" type="submit">只执行 OCR 测试</button>
+            <span id="ocrTestStatus" class="muted"></span>
+          </div>
+        </form>
+        <div id="ocrTestResult" class="ocr-test-result">
+          ${ocrTestResultMarkup()}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function runtimeItem(label, value) {
+  return `<div class="runtime-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function ocrTestPreviewMarkup() {
+  if (state.ocrTestPreview) return `<img class="preview" src="${state.ocrTestPreview}" alt="真实 OCR 测试图片" />`;
+  return `
+    <div class="upload-empty compact">
+      <strong>上传真实试卷图片</strong>
+      <span>此入口只验证 OCR 识别效果，不会触发 AI 批改和教师端数据闭环。</span>
+    </div>
+  `;
+}
+
+function ocrTestResultMarkup() {
+  const result = state.ocrTest;
+  if (!result) {
+    return `
+      <div class="empty compact">
+        上传图片后会显示识别状态、题目数量、文本长度、耗时和结构化结果。
+      </div>
+    `;
+  }
+  const statusClass = result.status === "成功" ? "done" : result.status.includes("缺失") ? "wait" : "bad";
+  return `
+    <div class="ocr-test-summary">
+      <span class="status ${statusClass}">${escapeHtml(result.status)}</span>
+      <div class="mini-grid">
+        <div class="metric-card"><span>识别题目数</span><strong>${result.questionCount}</strong></div>
+        <div class="metric-card"><span>文本长度</span><strong>${result.textLength}</strong></div>
+        <div class="metric-card"><span>耗时</span><strong>${result.duration} ms</strong></div>
+        <div class="metric-card"><span>OCR 引擎</span><strong>${escapeHtml(result.engine || "-")}</strong></div>
+      </div>
+      ${result.message ? `<p class="muted">${escapeHtml(result.message)}</p>` : ""}
+      ${result.warnings?.length ? `<div class="card compact-card"><strong>识别提示</strong>${result.warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
+      ${result.questionCount ? structuredOcrSummary(result.structured) : ""}
+      <div class="code-box">${escapeHtml(result.rawText || "暂无 OCR 文本")}</div>
+    </div>
+  `;
+}
+
+function structuredOcrSummary(structured) {
+  const questions = Array.isArray(structured?.questions) ? structured.questions : [];
+  if (!questions.length) return "";
+  return `
+    <div class="ocr-question-list">
+      ${questions.slice(0, 6).map((question) => `
+        <div class="ocr-question">
+          <strong>第 ${escapeHtml(question.question_no ?? "-")} 题</strong>
+          <p>${escapeHtml(question.question_text || "")}</p>
+          <div class="ocr-steps">${(question.student_answer || []).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
 // 评测中心：用内置样例说明批改结果不是随机给分。
@@ -1284,16 +1666,18 @@ async function renderManagementPage() {
 }
 
 async function refreshManagementData() {
-  const [assignments, classes, submissions, evaluation] = await Promise.all([
+  const [assignments, classes, submissions, evaluation, runtime] = await Promise.all([
     api("/api/assignments"),
     api("/api/classes"),
     api("/api/submissions"),
     api("/api/evaluation/grading"),
+    api("/api/runtime/status"),
   ]);
   state.assignments = assignments.data;
   state.classes = classes.data;
   state.submissions = submissions.data;
   state.evaluation = evaluation.data;
+  state.runtime = runtime.data;
 }
 
 async function handleCreateQuestion(event) {
@@ -1388,6 +1772,125 @@ async function handleAnnotation(event) {
   }
 }
 
+function handleOcrTestPreview(event) {
+  const file = event.target.files[0];
+  state.ocrTestFile = file || null;
+  if (!file) {
+    state.ocrTestPreview = "";
+    document.querySelector("#ocrTestPreview").innerHTML = ocrTestPreviewMarkup();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.ocrTestPreview = reader.result;
+    document.querySelector("#ocrTestPreview").innerHTML = ocrTestPreviewMarkup();
+  };
+  reader.readAsDataURL(file);
+}
+
+async function handleOcrTestSubmit(event) {
+  event.preventDefault();
+  const button = document.querySelector("#ocrTestBtn");
+  const status = document.querySelector("#ocrTestStatus");
+  const file = state.ocrTestFile;
+  if (!file) {
+    showToast("请先上传一张真实试卷图片");
+    return;
+  }
+  const student = findDefaultStudent();
+  const assignment = findRealOcrTestAssignment();
+  if (!student || !assignment) {
+    showToast("缺少可用于 OCR 测试的学生或作业数据");
+    return;
+  }
+
+  const startedAt = performance.now();
+  button.disabled = true;
+  status.textContent = "正在上传真实 OCR 测试图片...";
+  try {
+    const imageData = await readFileAsDataURL(file);
+    const upload = await api("/api/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        student_id: student.id,
+        subject: assignment.subject || "数学",
+        question_type: assignment.question_type || "计算题",
+        assignment_id: assignment.id,
+        image_name: file.name,
+        image_data: imageData,
+      }),
+    });
+    status.textContent = "正在执行 OCR...";
+    const submissionId = upload.data.submission_id;
+    await api("/api/ocr", {
+      method: "POST",
+      body: JSON.stringify({ submission_id: submissionId }),
+    });
+    const detail = await api(`/api/submissions/${submissionId}`);
+    state.ocrTest = buildOcrTestResult(detail.data, performance.now() - startedAt, null);
+    status.textContent = "";
+    showToast("真实 OCR 测试完成");
+  } catch (error) {
+    state.ocrTest = buildOcrTestResult(null, performance.now() - startedAt, error);
+    showToast(`真实 OCR 测试失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    status.textContent = "";
+    await refreshManagementData().catch(() => null);
+    renderManagement();
+  }
+}
+
+function findRealOcrTestAssignment() {
+  return (
+    state.assignments.find((item) => item.subject === "数学" && !["答题卡", "整张答题卡"].includes(item.question_type)) ||
+    state.assignments.find((item) => item.subject === "数学") ||
+    findDemoAssignment()
+  );
+}
+
+function buildOcrTestResult(submission, duration, error) {
+  const runtime = state.runtime || {};
+  if (error) {
+    const configMissing = !runtime.ocr_provider || runtime.ocr_provider === "none" || (runtime.ocr_provider === "llm" && !runtime.llm_enabled);
+    const keyMissing = runtime.ocr_provider === "llm" && !runtime.llm_has_key;
+    return {
+      status: configMissing ? "配置缺失" : keyMissing ? "API Key 缺失" : "模型调用失败",
+      message: error.message,
+      questionCount: 0,
+      textLength: 0,
+      duration: Math.round(duration),
+      engine: runtime.ocr_provider || "-",
+      rawText: "",
+      structured: null,
+      warnings: [],
+    };
+  }
+  const rawText = submission?.ocr_text || "";
+  const structured = parseJson(rawText);
+  const questions = Array.isArray(structured?.questions) ? structured.questions : [];
+  const warnings = submission?.ocr_warnings || [];
+  const failed = (submission?.ocr_engine || "").includes("Failed") || Number(submission?.ocr_confidence) === 0;
+  const configMissing = !runtime.ocr_provider || runtime.ocr_provider === "none" || (runtime.ocr_provider === "llm" && !runtime.llm_enabled);
+  const missingKey = runtime.ocr_provider === "llm" && !runtime.llm_has_key;
+  let status = "成功";
+  if (configMissing) status = "配置缺失";
+  else if (missingKey) status = "API Key 缺失";
+  else if (failed) status = "模型调用失败";
+  else if (!rawText.trim()) status = "失败";
+  return {
+    status,
+    message: status === "成功" ? "OCR 已完成，可对照下方结构化结果判断真实识别质量。" : "识别未达到可用状态，请检查配置、图片清晰度或模型服务返回。",
+    questionCount: questions.length,
+    textLength: rawText.length,
+    duration: Math.round(duration),
+    engine: submission?.ocr_engine || runtime.ocr_provider || "-",
+    rawText,
+    structured,
+    warnings,
+  };
+}
+
 function findAssignment(subject, type) {
   return (
     state.assignments.find((item) => item.subject === subject && item.question_type === type) ||
@@ -1430,6 +1933,10 @@ function questionStatusClass(question) {
   if (question.status === "wrong") return "is-wrong";
   if (question.status === "partial" || (Number(question.score) || 0) > 0) return "is-partial";
   return "is-wrong";
+}
+
+function safeDomId(value) {
+  return String(value ?? "").replace(/[^a-zA-Z0-9_-]/g, "-") || "item";
 }
 
 function formatScore(value) {
