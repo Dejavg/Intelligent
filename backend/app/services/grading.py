@@ -109,10 +109,16 @@ class GradingService:
 
         target_full_score = assignment.full_score or sum(question["full_score"] for question in graded)
         per_question_full = target_full_score / len(graded)
-        for question in graded:
+        assigned_full_scores: list[int | float] = []
+        for index, question in enumerate(graded):
+            if index == len(graded) - 1:
+                question_full = _clean_number(target_full_score - sum(float(value) for value in assigned_full_scores))
+            else:
+                question_full = _clean_number(per_question_full)
+            assigned_full_scores.append(question_full)
             base_score = float(question.pop("_base_score", question["score"]))
-            question["full_score"] = _clean_number(per_question_full)
-            question["score"] = _clean_number(base_score / 10 * per_question_full)
+            question["full_score"] = question_full
+            question["score"] = _clean_number(base_score / 10 * float(question_full))
 
         score = _clean_number(sum(float(question["score"]) for question in graded))
         full_score = _clean_number(sum(float(question["full_score"]) for question in graded))

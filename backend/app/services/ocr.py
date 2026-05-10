@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ..database import UPLOAD_DIR
 from ..models import Assignment, Submission
@@ -31,6 +32,13 @@ class OCRResult:
             "formula_latex": self.formula_latex,
             "warnings": self.warnings or [],
         }
+
+
+@dataclass
+class ImagePreprocessResult:
+    path: Path
+    warnings: list[str]
+    metadata: dict[str, Any]
 
 
 class OCRService:
@@ -106,8 +114,9 @@ class OCRService:
         image_path = _submission_image_path(submission)
         if not image_path:
             raise RuntimeError("Vision LLM OCR requires an uploaded image")
+        prepared = _prepare_image_for_ocr(image_path, submission, for_llm=True)
         llm_result = LLMClient().extract_homework_text(
-            image_path=image_path,
+            image_path=prepared.path,
             subject=submission.subject,
             question_type=submission.question_type,
             assignment=assignment,
@@ -125,6 +134,12 @@ class OCRService:
             confidence=confidence,
             blocks=[
                 {
+                    "type": "image_preprocess",
+                    "text": "图像预处理",
+                    "confidence": 1,
+                    "metadata": prepared.metadata,
+                },
+                {
                     "type": "llm_vision",
                     "text": ocr_text,
                     "confidence": confidence,
@@ -132,20 +147,21 @@ class OCRService:
                 }
             ],
             engine=f"VisionLLM:{llm_result.provider}:{llm_result.model}",
-            warnings=warnings,
+            warnings=[*prepared.warnings, *warnings],
         )
 
     def _recognize_with_paddle(self, submission: Submission) -> OCRResult:
         image_path = _submission_image_path(submission)
         if not image_path:
             raise RuntimeError("PaddleOCR requires an uploaded image")
+        prepared = _prepare_image_for_ocr(image_path, submission)
         try:
             from paddleocr import PaddleOCR  # type: ignore
         except ImportError as exc:
             raise RuntimeError("paddleocr package is not installed") from exc
 
         engine = PaddleOCR(use_angle_cls=True, lang="ch")
-        rows = engine.ocr(str(image_path), cls=True)
+        rows = engine.ocr(str(prepared.path), cls=True)
         blocks: list[dict] = []
         texts: list[str] = []
         confidences: list[float] = []
@@ -159,14 +175,16 @@ class OCRService:
         return OCRResult(
             raw_text="\n".join(texts),
             confidence=sum(confidences) / len(confidences) if confidences else 0,
-            blocks=blocks,
+            blocks=[{"type": "image_preprocess", "text": "图像预处理", "confidence": 1, "metadata": prepared.metadata}, *blocks],
             engine="PaddleOCR",
+            warnings=prepared.warnings,
         )
 
     def _recognize_with_baidu(self, submission: Submission) -> OCRResult:
         image_path = _submission_image_path(submission)
         if not image_path:
             raise RuntimeError("Baidu OCR requires an uploaded image")
+        prepared = _prepare_image_for_ocr(image_path, submission)
         if not settings.baidu_ocr_api_key or not settings.baidu_ocr_secret_key:
             raise RuntimeError("BAIDU_OCR_API_KEY and BAIDU_OCR_SECRET_KEY are required")
 
@@ -181,7 +199,7 @@ class OCRService:
         token_data = _post_form(f"{token_url}?{token_params}", {})
         access_token = token_data["access_token"]
 
-        image_b64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        image_b64 = base64.b64encode(prepared.path.read_bytes()).decode("utf-8")
         url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/handwriting?access_token={access_token}"
         data = _post_form(url, {"image": image_b64})
         words = data.get("words_result", [])
@@ -189,14 +207,17 @@ class OCRService:
         return OCRResult(
             raw_text="\n".join(texts),
             confidence=0.9 if texts else 0,
-            blocks=[{"type": "line", "text": text, "confidence": 0.9} for text in texts],
+            blocks=[{"type": "image_preprocess", "text": "图像预处理", "confidence": 1, "metadata": prepared.metadata}]
+            + [{"type": "line", "text": text, "confidence": 0.9} for text in texts],
             engine="Baidu Handwriting OCR",
+            warnings=prepared.warnings,
         )
 
     def _recognize_with_tencent(self, submission: Submission) -> OCRResult:
         image_path = _submission_image_path(submission)
         if not image_path:
             raise RuntimeError("Tencent OCR requires an uploaded image")
+        prepared = _prepare_image_for_ocr(image_path, submission)
         if not settings.tencent_secret_id or not settings.tencent_secret_key:
             raise RuntimeError("TENCENT_SECRET_ID and TENCENT_SECRET_KEY are required")
         try:
@@ -214,7 +235,7 @@ class OCRService:
         client_profile.httpProfile = http_profile
         client = ocr_client.OcrClient(cred, settings.tencent_region, client_profile)
         req = models.GeneralHandwritingOCRRequest()
-        req.ImageBase64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        req.ImageBase64 = base64.b64encode(prepared.path.read_bytes()).decode("utf-8")
         resp = client.GeneralHandwritingOCR(req)
         data = json.loads(resp.to_json_string())
         items = data.get("TextDetections", [])
@@ -222,8 +243,10 @@ class OCRService:
         return OCRResult(
             raw_text="\n".join(texts),
             confidence=0.9 if texts else 0,
-            blocks=[{"type": "line", "text": text, "confidence": 0.9} for text in texts],
+            blocks=[{"type": "image_preprocess", "text": "图像预处理", "confidence": 1, "metadata": prepared.metadata}]
+            + [{"type": "line", "text": text, "confidence": 0.9} for text in texts],
             engine="Tencent GeneralHandwritingOCR",
+            warnings=prepared.warnings,
         )
 
     def _mock_recognize(self, submission: Submission, assignment: Assignment) -> OCRResult:
@@ -326,6 +349,120 @@ class FormulaOCRService:
 
     def _latex_ocr(self, submission: Submission) -> str:
         return self._pix2tex(submission)
+
+
+def _prepare_image_for_ocr(image_path: Path, submission: Submission, for_llm: bool = False) -> ImagePreprocessResult:
+    if not settings.ocr_preprocess_enabled:
+        return ImagePreprocessResult(
+            path=image_path,
+            warnings=[],
+            metadata={"enabled": False, "used": False, "reason": "OCR_PREPROCESS_ENABLED=false"},
+        )
+    if for_llm and not settings.ocr_preprocess_for_llm:
+        return ImagePreprocessResult(
+            path=image_path,
+            warnings=[],
+            metadata={
+                "enabled": True,
+                "used": False,
+                "reason": "视觉大模型默认使用原图；如需增强图可设置 OCR_PREPROCESS_FOR_LLM=true",
+            },
+        )
+
+    try:
+        from PIL import Image, ImageOps  # type: ignore
+    except ImportError:
+        return ImagePreprocessResult(
+            path=image_path,
+            warnings=["图像预处理依赖 Pillow 未安装，已使用原图进入 OCR。"],
+            metadata={"enabled": True, "used": False, "reason": "Pillow not installed"},
+        )
+
+    output_dir = UPLOAD_DIR / "_preprocessed"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{submission.id or image_path.stem}_{image_path.stem}.png"
+    operations: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        image = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
+        original_size = image.size
+        max_side = max(settings.ocr_preprocess_max_side, 600)
+        if max(image.size) > max_side:
+            image.thumbnail((max_side, max_side))
+            operations.append(f"缩放至最长边 {max_side}px")
+
+        gray = ImageOps.grayscale(image)
+        operations.append("灰度化")
+        enhanced = ImageOps.autocontrast(gray)
+        operations.append("自动对比度增强")
+
+        processed = enhanced
+        try:
+            import cv2  # type: ignore
+            import numpy as np  # type: ignore
+
+            array = np.array(enhanced)
+            denoised = cv2.fastNlMeansDenoising(array, None, 8, 7, 21)
+            operations.append("轻量去噪")
+            binary = cv2.adaptiveThreshold(
+                denoised,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                15,
+            )
+            operations.append("自适应二值化")
+            angle = _estimate_skew_angle(binary)
+            if angle is not None and 0.3 <= abs(angle) <= 8:
+                center = (binary.shape[1] // 2, binary.shape[0] // 2)
+                matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+                binary = cv2.warpAffine(
+                    binary,
+                    matrix,
+                    (binary.shape[1], binary.shape[0]),
+                    flags=cv2.INTER_CUBIC,
+                    borderMode=cv2.BORDER_REPLICATE,
+                )
+                operations.append(f"倾斜矫正 {round(angle, 2)}°")
+            processed = Image.fromarray(binary)
+        except ImportError:
+            warnings.append("OpenCV/Numpy 未安装，已跳过去噪、二值化和倾斜矫正。")
+
+        processed.save(output_path, format="PNG", optimize=True)
+        metadata = {
+            "enabled": True,
+            "used": True,
+            "original_name": image_path.name,
+            "processed_name": output_path.name,
+            "original_size": {"width": original_size[0], "height": original_size[1]},
+            "processed_size": {"width": processed.size[0], "height": processed.size[1]},
+            "operations": operations,
+        }
+        if operations:
+            warnings.insert(0, "图像预处理完成：" + "、".join(operations))
+        return ImagePreprocessResult(path=output_path, warnings=warnings, metadata=metadata)
+    except Exception as exc:
+        return ImagePreprocessResult(
+            path=image_path,
+            warnings=[f"图像预处理失败，已使用原图进入 OCR：{exc}"],
+            metadata={"enabled": True, "used": False, "reason": str(exc)},
+        )
+
+
+def _estimate_skew_angle(binary_image) -> float | None:
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+
+    inverted = cv2.bitwise_not(binary_image)
+    coords = np.column_stack(np.where(inverted > 0))
+    if len(coords) < 80:
+        return None
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = 90 + angle
+    return -float(angle)
 
 
 def _submission_image_path(submission: Submission) -> Path | None:

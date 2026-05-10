@@ -1,8 +1,9 @@
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.app.database import SessionLocal, init_db
+from backend.app.database import SessionLocal, UPLOAD_DIR, init_db
 from backend.app.main import app
 from backend.app.models import Assignment, ClassRoom, Submission
 from backend.app.services.llm import normalize_answer_sheet_grading
@@ -196,6 +197,41 @@ x=4
         self.assertEqual(len(questions), 5)
         self.assertFalse(questions[3]["is_correct"])
         self.assertIn("方程求解", result["weak_points"])
+
+    def test_grading_evaluation_endpoint(self):
+        response = self.client.get("/api/evaluation/grading")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertGreaterEqual(data["summary"]["total_cases"], 3)
+        self.assertGreaterEqual(data["summary"]["wrong_question_accuracy"], 0.6)
+        self.assertTrue(data["cases"])
+
+    def test_image_preprocess_creates_enhanced_copy(self):
+        try:
+            from PIL import Image, ImageDraw  # type: ignore
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        from backend.app.services.ocr import _prepare_image_for_ocr
+
+        image_path = UPLOAD_DIR / "pytest-preprocess.png"
+        image = Image.new("RGB", (900, 520), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((60, 80), "1. 2x + 3 = 11", fill="black")
+        draw.text((60, 130), "2x = 8", fill="black")
+        draw.text((60, 180), "x = 4", fill="black")
+        image.save(image_path)
+
+        submission = Submission(id=999, image_url="/uploads/pytest-preprocess.png", image_name="pytest-preprocess.png")
+        result = _prepare_image_for_ocr(image_path, submission)
+        try:
+            self.assertTrue(result.metadata["enabled"])
+            self.assertTrue(result.path.exists())
+            self.assertIn("operations", result.metadata)
+        finally:
+            image_path.unlink(missing_ok=True)
+            if result.path != image_path:
+                Path(result.path).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

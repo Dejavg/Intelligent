@@ -1,6 +1,6 @@
 # 希沃智评 —— 多学科 AI 智能作业批改系统
 
-希沃智评是一个面向比赛 Demo 的全栈项目，支持学生上传作业图片、模拟 OCR 识别、多学科智能批改、过程分评分、个性化评语、知识点薄弱分析、教师复核和班级学情报告。
+希沃智评是一个面向比赛 Demo 的全栈项目，支持学生上传作业图片、真实/模拟 OCR 识别、多学科智能批改、过程分评分、个性化评语、知识点薄弱分析、教师复核和班级学情报告。
 
 当前版本为了保证本地稳定演示，前端采用无构建 SPA，后端采用 FastAPI + SQLite。AI 与 OCR 能力都封装成独立服务层，后续可替换为 PaddleOCR、Mathpix、pix2tex 或大模型 API。
 
@@ -20,7 +20,7 @@
 - 后端：Python FastAPI
 - 数据库：SQLite + SQLAlchemy
 - 数据模型：Pydantic + SQLAlchemy ORM
-- AI Demo：模拟 OCR + 规则评分 + 知识点统计
+- AI 模块：视觉大模型 OCR + OpenAI-compatible 大模型批改 + 规则兜底 + 知识点评测
 
 ## 目录结构
 
@@ -76,6 +76,9 @@ Copy-Item .env.example .env
 OCR_PROVIDER=llm
 OCR_FALLBACK_TO_MOCK=false
 ALLOW_MOCK_FOR_UPLOADED_IMAGES=false
+OCR_PREPROCESS_ENABLED=true
+OCR_PREPROCESS_FOR_LLM=false
+OCR_PREPROCESS_MAX_SIDE=1800
 LLM_ENABLED=true
 LLM_PROVIDER=kimi
 LLM_BASE_URL=https://api.moonshot.ai/v1
@@ -87,6 +90,12 @@ KIMI_API_KEY=your_key_here
 ```
 
 如果只想用传统 OCR，也可以设置 `OCR_PROVIDER=paddle`、`baidu` 或 `tencent`。系统现在默认禁止真实上传图片静默使用 MockOCR，避免“任意图片都被当成样例答案而满分”。
+
+上传真实图片时，系统会在进入传统 OCR 前执行图像预处理，包括灰度化、自动对比度增强、轻量去噪、自适应二值化和小角度倾斜矫正。视觉大模型默认使用原图；如现场图片偏暗或倾斜明显，可设置：
+
+```env
+OCR_PREPROCESS_FOR_LLM=true
+```
 
 如果日志出现 `HTTP 401: Invalid Authentication`，说明服务已经请求到 Kimi，但认证失败。请检查：
 
@@ -127,6 +136,8 @@ http://127.0.0.1:8000/docs
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
+| GET | `/api/runtime/status` | 查看 OCR、预处理和大模型运行配置 |
+| GET | `/api/evaluation/grading` | 运行内置评分准确率评测集 |
 | GET | `/api/students` | 获取学生列表 |
 | GET | `/api/assignments` | 获取作业列表 |
 | GET | `/api/question-bank` | 获取题库列表 |
@@ -168,9 +179,10 @@ http://127.0.0.1:8000/docs
 
 ## 后续优化方向
 
-- 已预留并实现 OCR Provider：`mock`、`paddle`、`baidu`、`tencent`。
+- 已预留并实现 OCR Provider：`mock`、`paddle`、`baidu`、`tencent`、`llm`。
+- 已增加真实图片预处理：灰度化、对比度增强、去噪、二值化、倾斜矫正，并在 OCR 结果中给出诊断提示。
 - 已预留并实现公式 OCR Provider：`mock`、`mathpix`、`pix2tex`、`latex-ocr`。
 - 已实现 OpenAI-compatible 大模型评分适配，可配置 Kimi、DeepSeek 或自定义网关。
 - 已增加题库管理、班级管理、批量上传和教师二次标注接口及管理页。
 - 班级分析页支持 ECharts CDN，可视化失败时保留 CSS 图表兜底。
-- 已增加单元测试样例、可选 API Token 鉴权、多班级基础模型。
+- 已增加内置评分评测接口、单元测试样例、可选 API Token 鉴权、多班级基础模型。

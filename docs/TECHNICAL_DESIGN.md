@@ -31,6 +31,9 @@
 OCR_PROVIDER=llm       # mock | paddle | baidu | tencent | llm
 ALLOW_MOCK_FOR_UPLOADED_IMAGES=false
 FORMULA_OCR_PROVIDER=mock  # mock | mathpix | pix2tex | latex-ocr
+OCR_PREPROCESS_ENABLED=true
+OCR_PREPROCESS_FOR_LLM=false
+OCR_PREPROCESS_MAX_SIDE=1800
 ```
 
 接口返回结构为：
@@ -53,6 +56,20 @@ FORMULA_OCR_PROVIDER=mock  # mock | mathpix | pix2tex | latex-ocr
 - 数学公式：已预留 Mathpix HTTP 调用、pix2tex/LaTeX-OCR 本地模型调用。
 - 版面分析：先检测题号、答案区域、步骤区域，再分别识别。
 - 多图合并：按页码和题号归并 OCR 块，形成题目级文本。
+
+### 图像预处理
+
+真实上传图片在进入传统 OCR 前会先经过轻量预处理，核心实现位于 `backend/app/services/ocr.py`：
+
+- EXIF 方向修正；
+- 图片最长边缩放，控制请求体大小；
+- 灰度化；
+- 自动对比度增强；
+- OpenCV 可用时执行轻量去噪；
+- OpenCV 可用时执行自适应二值化；
+- 根据文本像素估计小角度倾斜并矫正。
+
+预处理结果会保存到 `backend/uploads/_preprocessed/` 运行时目录，并通过 OCR `warnings` 与 `blocks.metadata` 返回诊断信息。视觉大模型默认使用原图，因为多模态模型通常能利用颜色和版面上下文；若现场拍摄图片偏暗、阴影明显或倾斜，可设置 `OCR_PREPROCESS_FOR_LLM=true` 让视觉模型也使用增强图。
 
 替换方式：
 
@@ -275,7 +292,39 @@ X-API-Key: your_demo_token
 
 该设计避免 AI 误判直接影响最终成绩，符合教学场景中“AI 辅助、教师确认”的产品原则。
 
-## 十一、核心创新点
+## 十一、评分准确率评测体系
+
+项目新增 `GET /api/evaluation/grading`，用于比赛展示和回归测试。该接口不依赖外部大模型，直接使用标准 OCR 文本测试批改模块，输出：
+
+- `total_cases`：评测样例数；
+- `pass_rate`：综合通过率；
+- `score_within_tolerance_rate`：分数误差是否在容忍区间内；
+- `wrong_question_accuracy`：错题题号识别是否准确；
+- `average_score_error`：平均分数误差；
+- `cases`：每个样例的期望分、实际分、期望错题和预测错题。
+
+当前内置样例覆盖：
+
+- 全部正确的数学小测；
+- 计算题中间计算错误；
+- 方程求解最后一步除法错误；
+- 应用题数量关系判断。
+
+后续真实评测可扩展为 `tests/fixtures/grading_benchmark.json` 或数据库评测集，字段建议包含：
+
+```json
+{
+  "ocr_text": "标准识别文本",
+  "expected_score": 84,
+  "expected_full_score": 100,
+  "expected_wrong_questions": ["3", "4"],
+  "expected_weak_points": ["退位减法", "方程求解"]
+}
+```
+
+教师二次标注数据也可以进入评测集：当教师确认 AI 评分偏高、错因归因不准或漏判时，将该样本沉淀为 regression case，用于持续优化 Prompt、规则兜底和模型选择。
+
+## 十二、核心创新点
 
 - 从“答案对错”升级为“过程诊断 + 部分分”。
 - 多学科统一结构化批改输出。

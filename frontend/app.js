@@ -5,6 +5,7 @@ const state = {
   assignments: [],
   classes: [],
   submissions: [],
+  evaluation: null,
   selectedFile: null,
   selectedPreview: "",
   lastSubmissionId: null,
@@ -352,9 +353,12 @@ function scorePanel(submission) {
 function gradingDetail(submission) {
   const result = submission.grading_result || {};
   const isComposition = submission.subject === "英语" || submission.subject === "语文";
+  const sheet = result.ai_metadata?.answer_sheet || {};
   return `
     <div class="tag-list" style="margin-bottom:14px">
       <span class="tag">AI 引擎：${escapeHtml(result.ai_engine || "RuleEngine")}</span>
+      ${sheet.fallback ? `<span class="tag">OCR 文本兜底</span>` : ""}
+      ${Array.isArray(sheet.questions) && sheet.questions.length ? `<span class="tag">逐题：${sheet.questions.length} 题</span>` : ""}
     </div>
     <h3>评分维度</h3>
     ${dimensionBars(result.dimension_scores || {}, submission.assignment.full_score)}
@@ -381,8 +385,17 @@ function answerSheetDetails(result) {
   const sheet = result.ai_metadata?.answer_sheet;
   const questions = Array.isArray(sheet?.questions) ? sheet.questions : [];
   if (!questions.length) return "";
+  const correctCount = questions.filter((question) => question.is_correct).length;
+  const totalScore = sheet?.score ?? result.score ?? 0;
+  const totalFull = sheet?.full_score ?? result.full_score ?? 0;
   return `
     <h3>逐题批改</h3>
+    <div class="mini-grid">
+      <div class="metric-card"><span>题目数</span><strong>${questions.length}</strong></div>
+      <div class="metric-card"><span>正确题</span><strong>${correctCount}</strong></div>
+      <div class="metric-card"><span>需订正</span><strong>${questions.length - correctCount}</strong></div>
+      <div class="metric-card"><span>整卷得分</span><strong>${escapeHtml(totalScore)} / ${escapeHtml(totalFull)}</strong></div>
+    </div>
     <div class="bar-list">
       ${questions.map((question, index) => {
         const no = question.question_no || index + 1;
@@ -390,18 +403,19 @@ function answerSheetDetails(result) {
         const full = question.full_score ?? "-";
         const mistakes = Array.isArray(question.mistakes) ? question.mistakes : [];
         return `
-          <div class="card">
+          <div class="card question-card ${question.is_correct ? "is-correct" : "needs-review"}">
             <div class="section-head" style="margin-bottom:10px">
               <div>
                 <strong>第 ${escapeHtml(no)} 题 · ${escapeHtml(question.subject || "自动识别")} · ${escapeHtml(question.question_type || "题型未定")}</strong>
                 <p class="muted">${escapeHtml(question.question_text || "未识别到完整题干")}</p>
               </div>
-              <span class="tag">${escapeHtml(score)} / ${escapeHtml(full)}</span>
+              <span class="score-pill ${question.is_correct ? "ok" : "bad"}">${question.is_correct ? "正确" : "订正"} · ${escapeHtml(score)} / ${escapeHtml(full)}</span>
             </div>
             <p class="muted"><strong>学生作答：</strong>${escapeHtml(question.student_answer || "未识别到作答")}</p>
             <p class="muted"><strong>分析：</strong>${escapeHtml(question.process_analysis || question.comment || "暂无分析")}</p>
             ${mistakes.length ? `<div class="bar-list">${mistakes.map((item) => `<p class="muted"><strong>${escapeHtml(item.step || "问题")}：</strong>${escapeHtml(item.error || item.reason || item)}</p>`).join("")}</div>` : ""}
             ${question.correct_solution ? `<div class="code-box">${escapeHtml(question.correct_solution)}</div>` : ""}
+            ${question.suggestion ? `<p class="muted"><strong>建议：</strong>${escapeHtml(question.suggestion)}</p>` : ""}
             <div class="tag-list" style="margin-top:10px">
               ${(question.knowledge_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
               ${(question.weak_points || []).map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}
@@ -751,6 +765,7 @@ function weakPointList(items) {
 function renderManagement() {
   const firstAssignment = state.assignments[0];
   const teacher = state.students.find((item) => item.role === "teacher");
+  const evaluation = state.evaluation;
   app.innerHTML = `
     <section>
       <div class="section-head">
@@ -792,6 +807,12 @@ function renderManagement() {
           </div>
           <button class="btn" type="submit">批量生成提交</button>
         </form>
+        <div class="panel">
+          <h3>评分准确率评测</h3>
+          ${evaluation ? evaluationPanel(evaluation) : `<p class="muted">暂无评测数据</p>`}
+        </div>
+      </div>
+      <div class="analysis-grid" style="margin-top:18px">
         <form id="annotationForm" class="panel form-grid">
           <h3>教师二次标注</h3>
           <p class="muted">将教师复核沉淀为训练样本，后续可用于优化评分规则和模型提示词。</p>
@@ -807,8 +828,6 @@ function renderManagement() {
           <input type="hidden" name="teacher_id" value="${teacher?.id || ""}" />
           <button class="btn" type="submit">保存标注</button>
         </form>
-      </div>
-      <div class="analysis-grid" style="margin-top:18px">
         <div class="panel">
           <h3>题库列表</h3>
           <div class="table-wrap">
@@ -840,20 +859,47 @@ function renderManagement() {
   document.querySelector("#annotationForm").addEventListener("submit", handleAnnotation);
 }
 
+function evaluationPanel(evaluation) {
+  const summary = evaluation.summary || {};
+  const cases = evaluation.cases || [];
+  return `
+    <div class="mini-grid">
+      <div class="metric-card"><span>样例数</span><strong>${summary.total_cases ?? 0}</strong></div>
+      <div class="metric-card"><span>通过率</span><strong>${percent(summary.pass_rate)}</strong></div>
+      <div class="metric-card"><span>错题识别</span><strong>${percent(summary.wrong_question_accuracy)}</strong></div>
+      <div class="metric-card"><span>平均误差</span><strong>${summary.average_score_error ?? 0}</strong></div>
+    </div>
+    <div class="bar-list" style="margin-top:12px">
+      ${cases.map((item) => `
+        <div class="eval-row">
+          <div>
+            <strong>${escapeHtml(item.name)}</strong>
+            <p class="muted">期望错题：${(item.expected_wrong_questions || []).join("、") || "无"} · 预测错题：${(item.predicted_wrong_questions || []).join("、") || "无"}</p>
+          </div>
+          <span class="score-pill ${item.passed ? "ok" : "bad"}">${escapeHtml(item.actual_score)} / ${escapeHtml(item.expected_score)}</span>
+        </div>
+      `).join("")}
+    </div>
+    <p class="muted">${escapeHtml(evaluation.rubric || "")}</p>
+  `;
+}
+
 async function renderManagementPage() {
   await refreshManagementData();
   renderManagement();
 }
 
 async function refreshManagementData() {
-  const [assignments, classes, submissions] = await Promise.all([
+  const [assignments, classes, submissions, evaluation] = await Promise.all([
     api("/api/assignments"),
     api("/api/classes"),
     api("/api/submissions"),
+    api("/api/evaluation/grading"),
   ]);
   state.assignments = assignments.data;
   state.classes = classes.data;
   state.submissions = submissions.data;
+  state.evaluation = evaluation.data;
 }
 
 async function handleCreateQuestion(event) {
@@ -976,6 +1022,11 @@ function statusClassName(status = "") {
   if (status.includes("复核")) return "review";
   if (status.includes("AI") || status.includes("返回")) return "done";
   return "wait";
+}
+
+function percent(value) {
+  const number = Number(value) || 0;
+  return `${Math.round(number * 100)}%`;
 }
 
 function escapeHtml(value) {

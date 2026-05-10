@@ -28,6 +28,7 @@ from .schemas import (
 )
 from .seed import seed_data
 from .services.grading import GradingService
+from .services.evaluation import EvaluationService
 from .services.ocr import OCRService
 from .services.reports import ReportService
 from .settings import settings
@@ -50,6 +51,7 @@ app.add_middleware(
 
 ocr_service = OCRService()
 grading_service = GradingService()
+evaluation_service = EvaluationService(grading_service)
 report_service = ReportService()
 
 
@@ -77,6 +79,9 @@ def runtime_status() -> dict:
             "ocr_provider": settings.ocr_provider,
             "ocr_fallback_to_mock": settings.ocr_fallback_to_mock,
             "allow_mock_for_uploaded_images": settings.allow_mock_for_uploaded_images,
+            "ocr_preprocess_enabled": settings.ocr_preprocess_enabled,
+            "ocr_preprocess_for_llm": settings.ocr_preprocess_for_llm,
+            "ocr_preprocess_max_side": settings.ocr_preprocess_max_side,
             "llm_enabled": settings.llm_enabled,
             "llm_provider": settings.llm_provider,
             "llm_base_url": settings.llm_base_url,
@@ -92,6 +97,11 @@ def runtime_status() -> dict:
             ),
         }
     }
+
+
+@app.get("/api/evaluation/grading")
+def grading_evaluation() -> dict:
+    return {"data": evaluation_service.run_grading_benchmark()}
 
 
 @app.get("/api/students")
