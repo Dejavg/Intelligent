@@ -1,5 +1,7 @@
 const app = document.querySelector("#app");
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 
+// ========== State ==========
 const state = {
   students: [],
   assignments: [],
@@ -23,9 +25,14 @@ document.addEventListener("DOMContentLoaded", init);
 window.addEventListener("hashchange", renderRoute);
 
 async function init() {
-  await loadBaseData();
-  if (!location.hash) location.hash = "#home";
-  renderRoute();
+  try {
+    showAppLoading("正在连接后端服务", "正在加载学生、作业、班级和运行模式配置。");
+    await loadBaseData();
+    if (!location.hash) location.hash = "#home";
+    renderRoute();
+  } catch (error) {
+    renderFatalError(error);
+  }
 }
 
 async function loadBaseData() {
@@ -41,20 +48,27 @@ async function loadBaseData() {
   state.runtime = runtime.data;
 }
 
+// ========== API ==========
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (error) {
+    throw new Error("网络失败或后端未启动，请确认 FastAPI 服务正在 http://127.0.0.1:8000 运行。");
+  }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(detail.detail || "请求失败");
+    throw new Error(friendlyErrorMessage(detail.detail || response.statusText || "请求失败", response.status));
   }
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) return response.json();
   return response.text();
 }
 
+// ========== Router ==========
 function renderRoute() {
   const hash = location.hash.replace("#", "") || "home";
   const [view, id] = hash.split("/");
@@ -73,6 +87,7 @@ function setActiveNav(view) {
   });
 }
 
+// ========== Home ==========
 // 首页首屏：用于比赛开场快速传达产品定位和核心演示结果。
 function renderHome() {
   app.innerHTML = `
@@ -181,6 +196,7 @@ function flowStep(no, title, text) {
 function modeBanner() {
   const runtime = state.runtime || {};
   const stable = Boolean(runtime.demo_fixed_math_paper_ocr);
+  const safety = runtimeSafety(runtime);
   const title = stable ? "当前模式：比赛稳定演示模式" : "当前模式：真实识别模式";
   const description = stable
     ? "上传数学练习卷后，系统将使用固定 5 题结构化 OCR，保证比赛现场演示稳定。"
@@ -193,6 +209,7 @@ function modeBanner() {
       </div>
       <div class="tag-list">
         <span class="tag">${stable ? "稳定 Demo OCR" : "真实识别链路"}</span>
+        <span class="tag ${safety.safe ? "success" : "danger"}">当前可安全演示：${escapeHtml(safety.label)}</span>
         <span class="tag">逐题批改</span>
         <span class="tag">过程分</span>
         <span class="tag">教师复核</span>
@@ -202,11 +219,37 @@ function modeBanner() {
         <span>OCR：${escapeHtml(runtime.ocr_provider ?? "-")}</span>
         <span>固定演示：${stable ? "开启" : "关闭"}</span>
         <span>LLM：${runtime.llm_enabled ? "已配置" : "未启用"}</span>
+        <span>${escapeHtml(safety.message)}</span>
       </div>
     </section>
   `;
 }
 
+function runtimeSafety(runtime = {}) {
+  const provider = String(runtime.ocr_provider || "").toLowerCase();
+  const knownProviders = ["mock", "llm", "paddle", "baidu", "tencent"];
+  if (runtime.demo_fixed_math_paper_ocr) {
+    return { safe: true, label: "是", message: "稳定演示模式已开启，现场演示不会依赖真实 OCR 网络链路。" };
+  }
+  if (!knownProviders.includes(provider)) {
+    return { safe: false, label: "否", message: "OCR_PROVIDER 配置错误，请检查 .env。" };
+  }
+  if (provider === "mock") {
+    return { safe: false, label: "否", message: "当前关闭了固定演示但 OCR_PROVIDER=mock，建议切回演示模式或配置真实 OCR。" };
+  }
+  if (provider === "llm") {
+    if (!runtime.llm_enabled || !runtime.llm_vision_enabled) {
+      return { safe: false, label: "否", message: "真实 OCR 模式未启用 LLM 视觉识别，请检查 LLM_ENABLED / LLM_VISION_OCR。" };
+    }
+    if (!runtime.llm_has_key) {
+      return { safe: false, label: "否", message: "真实 OCR 配置不完整，请填写 KIMI_API_KEY 或切换演示模式。" };
+    }
+    return { safe: true, label: "真实 OCR 模式可用", message: "真实 OCR 模式配置完整，仍建议比赛现场优先使用稳定演示模式。" };
+  }
+  return { safe: true, label: "真实 OCR 模式可用", message: `${provider || "OCR"} 识别链路已选择，请确认本地/云端依赖可访问。` };
+}
+
+// ========== Student Upload ==========
 // 学生上传页：按演示流程串联上传、OCR、批改和结果跳转。
 function renderStudent() {
   state.uploadStep = 1;
@@ -349,6 +392,14 @@ function assignmentInfo(subject, type) {
 
 function handlePreview(event) {
   const file = event.target.files[0];
+  const validation = validateImageFile(file);
+  if (!validation.ok) {
+    state.selectedFile = null;
+    state.selectedPreview = "";
+    document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
+    showToast(validation.message);
+    return;
+  }
   state.selectedFile = file || null;
   if (!file) {
     state.selectedPreview = "";
@@ -389,8 +440,14 @@ async function handleGradeSubmit(event) {
   const questionType = document.querySelector("#typeSelect").value;
   const assignment = findAssignment(subject, questionType);
   const studentId = Number(document.querySelector("#studentSelect").value);
+  if (!state.selectedFile) {
+    status.textContent = "请先上传作业图片，或点击“快速演示：使用固定 5 题数学卷”。";
+    showToast("没有上传图片：请先选择 JPG / PNG / JPEG 图片。");
+    return;
+  }
 
   button.disabled = true;
+  let keepStatus = false;
   updateUploadStep(2);
   status.textContent = "上传中...";
   try {
@@ -424,10 +481,12 @@ async function handleGradeSubmit(event) {
     showToast("批改完成");
     location.hash = `#result/${submissionId}`;
   } catch (error) {
-    showToast(error.message);
+    status.textContent = formatStageError(error, "批改流程");
+    keepStatus = true;
+    showToast(status.textContent);
   } finally {
     button.disabled = false;
-    status.textContent = "";
+    if (!keepStatus) status.textContent = "";
   }
 }
 
@@ -478,9 +537,9 @@ async function runQuickDemo(source = "home") {
     showToast(source === "home" ? "快速演示已生成，正在进入批改结果" : "演示批改完成");
     location.hash = `#result/${submissionId}`;
   } catch (error) {
-    showToast(`一键演示失败：${error.message}`);
+    showToast(formatStageError(error, "一键演示"));
     const status = document.querySelector("#quickDemoStatus") || document.querySelector("#uploadStatus");
-    if (status) status.textContent = `演示失败：${error.message}`;
+    if (status) status.textContent = formatStageError(error, "一键演示");
   } finally {
     state.quickDemoRunning = false;
     resetQuickDemoButtons();
@@ -619,12 +678,14 @@ function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
   if (line) ctx.fillText(line, x, y);
 }
 
+// ========== Result ==========
 // 批改结果页：核心展示页，突出总分、逐题过程分和错因定位。
 async function renderResult(submissionId) {
   if (!submissionId) {
-    app.innerHTML = `<div class="empty">暂无批改结果</div>`;
+    app.innerHTML = emptyState("没有可用提交记录", "请先上传作业图片，或点击首页的一键演示按钮生成演示提交。", "#student", "去上传");
     return;
   }
+  showAppLoading("加载提交详情中", "正在读取 OCR、AI 批改结果和学生个人报告。");
   try {
     const detail = await api(`/api/submissions/${submissionId}`);
     const submission = detail.data;
@@ -672,7 +733,7 @@ async function renderResult(submissionId) {
     bindQuestionNavigation();
     bindExportButtons(submission);
   } catch (error) {
-    app.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    app.innerHTML = errorState("加载提交详情失败", error, "#student", "返回上传页");
   }
 }
 
@@ -694,7 +755,7 @@ async function rerunCurrentSubmission(event) {
     showToast("已重新批改");
     await renderResult(submissionId);
   } catch (error) {
-    showToast(error.message);
+    showToast(formatStageError(error, button.textContent.includes("批改") ? "AI 批改" : "OCR 识别"));
   } finally {
     button.disabled = false;
     button.textContent = "重新识别并批改";
@@ -1078,15 +1139,29 @@ function dimensionBars(scores, fullScore) {
 }
 
 // 教师工作台：展示 AI 批改和教师复核的闭环。
+// ========== Teacher ==========
 async function renderTeacher(selectedId) {
-  const response = await api("/api/submissions");
+  showAppLoading("加载教师工作台中", "正在读取提交列表、AI 批改结果和教师复核数据。");
+  let response;
+  try {
+    response = await api("/api/submissions");
+  } catch (error) {
+    app.innerHTML = errorState("加载教师工作台失败", error, "#home", "返回首页");
+    return;
+  }
   state.submissions = response.data;
   const filteredSubmissions = filterTeacherSubmissions(state.submissions);
   const selected =
     (selectedId && filteredSubmissions.some((item) => String(item.id) === String(selectedId)) ? selectedId : null) ||
     filteredSubmissions[0]?.id ||
     state.submissions[0]?.id;
-  const detail = selected ? (await api(`/api/submissions/${selected}`)).data : null;
+  let detail = null;
+  try {
+    detail = selected ? (await api(`/api/submissions/${selected}`)).data : null;
+  } catch (error) {
+    app.innerHTML = errorState("加载提交详情失败", error, "#teacher", "返回教师工作台");
+    return;
+  }
 
   app.innerHTML = `
     <section>
@@ -1124,7 +1199,7 @@ async function renderTeacher(selectedId) {
             </tbody>
           </table>
         </div>
-        ${detail ? reviewPanel(detail) : `<div class="empty">暂无提交记录</div>`}
+        ${detail ? reviewPanel(detail) : emptyState("没有可用提交记录", "当前没有学生提交。可以先点击一键演示或批量上传 Demo 生成记录。", "#student", "去上传")}
       </div>
     </section>
   `;
@@ -1511,8 +1586,16 @@ async function submitReview(id, action) {
 }
 
 // 班级分析页：把单份批改结果汇总为教学仪表盘。
+// ========== Analysis ==========
 async function renderAnalysis() {
-  const response = await api(`/api/classes/${encodeURIComponent("七年级一班")}/analysis`);
+  showAppLoading("加载班级分析中", "正在汇总平均分、正确率、薄弱点排行和教学建议。");
+  let response;
+  try {
+    response = await api(`/api/classes/${encodeURIComponent("七年级一班")}/analysis`);
+  } catch (error) {
+    app.innerHTML = errorState("加载班级分析失败", error, "#home", "返回首页");
+    return;
+  }
   const data = response.data;
   app.innerHTML = `
     <section>
@@ -1674,6 +1757,7 @@ function weakPointList(items) {
   `;
 }
 
+// ========== Management ==========
 function renderManagement() {
   const firstAssignment = state.assignments[0];
   const teacher = state.students.find((item) => item.role === "teacher");
@@ -1696,7 +1780,7 @@ function renderManagement() {
         <h3>评分准确率评测</h3>
         ${evaluation ? evaluationPanel(evaluation) : `<p class="muted">暂无评测数据</p>`}
       </div>
-      <div class="management-grid">
+      <div class="management-masonry">
         <form id="questionForm" class="panel form-grid">
           <h3>新增题库题目</h3>
           <div class="field"><label>标题</label><input name="title" value="分数方程拓展练习" /></div>
@@ -1715,8 +1799,6 @@ function renderManagement() {
           <div class="field"><label>教师</label><input name="teacher_name" value="陈老师" /></div>
           <button class="btn" type="submit">创建班级</button>
         </form>
-      </div>
-      <div class="management-grid">
         <form id="bulkForm" class="panel form-grid">
           <h3>批量上传 Demo</h3>
           <p class="muted">选择一个题目后，将为当前三个学生批量创建提交并自动 OCR + 批改。</p>
@@ -1734,7 +1816,7 @@ function renderManagement() {
           <div class="field">
             <label>提交记录</label>
             <select name="submission_id">
-              ${state.submissions.map((item) => `<option value="${item.id}">${escapeHtml(item.student.name)} · ${escapeHtml(item.assignment.title)}</option>`).join("")}
+              ${state.submissions.map((item) => `<option value="${item.id}">${escapeHtml(item.student.name)} · ${escapeHtml(item.assignment.title)}</option>`).join("") || `<option value="" disabled>暂无可标注提交记录</option>`}
             </select>
           </div>
           <div class="field"><label>标注标签</label><input name="label" value="AI 评分偏高" /></div>
@@ -1743,8 +1825,6 @@ function renderManagement() {
           <input type="hidden" name="teacher_id" value="${teacher?.id || ""}" />
           <button class="btn" type="submit">保存标注</button>
         </form>
-      </div>
-      <div class="management-grid">
         <div class="panel">
           <h3>题库列表</h3>
           <div class="table-wrap">
@@ -1980,8 +2060,13 @@ function evaluationCaseRow(item) {
 }
 
 async function renderManagementPage() {
-  await refreshManagementData();
-  renderManagement();
+  showAppLoading("加载管理中心中", "正在读取评测中心、真实 OCR 测试状态、题库和班级数据。");
+  try {
+    await refreshManagementData();
+    renderManagement();
+  } catch (error) {
+    app.innerHTML = errorState("加载管理中心失败", error, "#home", "返回首页");
+  }
 }
 
 async function refreshManagementData() {
@@ -2092,6 +2177,10 @@ async function handleAnnotation(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const submissionId = form.get("submission_id");
+  if (!submissionId) {
+    showToast("没有可用提交记录：请先上传作业或运行一键演示。");
+    return;
+  }
   try {
     await api(`/api/submissions/${submissionId}/annotations`, {
       method: "POST",
@@ -2112,6 +2201,14 @@ async function handleAnnotation(event) {
 
 function handleOcrTestPreview(event) {
   const file = event.target.files[0];
+  const validation = validateImageFile(file);
+  if (!validation.ok) {
+    state.ocrTestFile = null;
+    state.ocrTestPreview = "";
+    document.querySelector("#ocrTestPreview").innerHTML = ocrTestPreviewMarkup();
+    showToast(validation.message);
+    return;
+  }
   state.ocrTestFile = file || null;
   if (!file) {
     state.ocrTestPreview = "";
@@ -2132,7 +2229,12 @@ async function handleOcrTestSubmit(event) {
   const status = document.querySelector("#ocrTestStatus");
   const file = state.ocrTestFile;
   if (!file) {
-    showToast("请先上传一张真实试卷图片");
+    showToast("没有上传图片：请先上传一张真实试卷图片。");
+    return;
+  }
+  const validation = validateImageFile(file);
+  if (!validation.ok) {
+    showToast(validation.message);
     return;
   }
   const student = findDefaultStudent();
@@ -2170,7 +2272,7 @@ async function handleOcrTestSubmit(event) {
     showToast("真实 OCR 测试完成");
   } catch (error) {
     state.ocrTest = buildOcrTestResult(null, performance.now() - startedAt, error);
-    showToast(`真实 OCR 测试失败：${error.message}`);
+    showToast(formatStageError(error, "真实 OCR 测试"));
   } finally {
     button.disabled = false;
     status.textContent = "";
@@ -2229,6 +2331,7 @@ function buildOcrTestResult(submission, duration, error) {
   };
 }
 
+// ========== Utilities ==========
 function findAssignment(subject, type) {
   return (
     state.assignments.find((item) => item.subject === subject && item.question_type === type) ||
@@ -2353,6 +2456,92 @@ function rate(items, predicate) {
 function listSummary(value, fallback = "-") {
   if (Array.isArray(value)) return value.length ? value.join("、") : fallback;
   return value || fallback;
+}
+
+function validateImageFile(file) {
+  if (!file) return { ok: true };
+  const allowedTypes = ["image/jpeg", "image/png"];
+  const lowerName = String(file.name || "").toLowerCase();
+  const allowedExt = lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".png");
+  if (!allowedTypes.includes(file.type) && !allowedExt) {
+    return { ok: false, message: "图片格式不支持：请上传 JPG、JPEG 或 PNG 图片。" };
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return { ok: false, message: `图片过大：当前约 ${formatFileSize(file.size)}，建议压缩到 ${formatFileSize(MAX_UPLOAD_BYTES)} 以内。` };
+  }
+  return { ok: true };
+}
+
+function formatFileSize(bytes) {
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)}MB`;
+}
+
+function friendlyErrorMessage(message, status) {
+  const text = String(message || "");
+  if (status === 401 || text.includes("Invalid Authentication") || text.includes("invalid_authentication")) {
+    return "API Key 缺失或无效：请检查 KIMI_API_KEY / LLM_API_KEY，修改 .env 后重启后端。";
+  }
+  if (status === 413 || text.includes("too large") || text.includes("图片")) {
+    return text.includes("图片") ? text : "图片过大：请压缩图片后重试。";
+  }
+  if (text.includes("NoOCRConfigured") || text.includes("OCR_PROVIDER")) {
+    return "OCR_PROVIDER 配置错误或未配置可用 OCR 服务，请检查 .env。";
+  }
+  if (text.includes("LLM HTTP") || text.includes("模型") || text.includes("timeout") || text.includes("timed out")) {
+    return `大模型服务调用失败：${text}`;
+  }
+  return text || "请求失败，请稍后重试。";
+}
+
+function formatStageError(error, stage = "操作") {
+  const text = friendlyErrorMessage(error?.message || error, 0);
+  if (text.includes("API Key")) return `${stage}失败：${text}`;
+  if (text.includes("OCR_PROVIDER")) return `${stage}失败：${text}`;
+  if (text.includes("后端未启动")) return `${stage}失败：${text}`;
+  return `${stage}失败：${text}`;
+}
+
+function showAppLoading(title, text) {
+  app.innerHTML = loadingView(title, text);
+}
+
+function loadingView(title = "加载中", text = "正在处理，请稍候。") {
+  return `
+    <div class="state-card loading-card">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(text)}</p>
+    </div>
+  `;
+}
+
+function errorState(title, error, href = "#home", action = "返回首页") {
+  return `
+    <div class="state-card error-card">
+      <span class="state-icon">!</span>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(friendlyErrorMessage(error?.message || error, 0))}</p>
+      <div class="button-row">
+        <a class="btn" href="${href}">${escapeHtml(action)}</a>
+        <button class="btn ghost" type="button" onclick="location.reload()">刷新页面</button>
+      </div>
+    </div>
+  `;
+}
+
+function emptyState(title, text, href = "", action = "") {
+  return `
+    <div class="empty empty-state">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(text)}</p>
+      ${href ? `<a class="btn ghost small" href="${href}">${escapeHtml(action || "去处理")}</a>` : ""}
+    </div>
+  `;
+}
+
+function renderFatalError(error) {
+  app.innerHTML = errorState("后端连接失败", error, "#home", "重试前请确认服务");
 }
 
 function escapeHtml(value) {
