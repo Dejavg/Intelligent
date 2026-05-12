@@ -292,7 +292,7 @@ function renderStudent() {
           <div id="essayPromptWrap">${compositionPromptMarkup(defaultSubject, types[0])}</div>
           <div id="assignmentInfo" class="card assignment-card">${assignmentInfo(defaultSubject, types[0])}</div>
           <div class="field upload-field">
-            <label for="imageInput">上传试卷图片</label>
+            <label for="imageInput">上传试卷图片（支持多张）</label>
             <p class="muted">支持上传多张图片，请按试卷顺序上传。例如：先上传题目页，再上传答题页；也可以上传单张完整答题卡。</p>
             <div id="uploadDrop" class="upload-drop ${state.selectedFiles.length ? "has-files" : ""}">
               <input id="imageInput" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" multiple />
