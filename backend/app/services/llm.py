@@ -462,6 +462,21 @@ def normalize_llm_grading(raw: dict[str, Any], rule_result: dict[str, Any], subj
         "llm_provider": settings.llm_provider,
         "topic_relevance": raw.get("topic_relevance") or (result.get("ai_metadata") or {}).get("topic_relevance"),
     }
+    composition_dimensions = {
+        key: raw.get(key)
+        for key in [
+            "topic_relevance_score",
+            "content_score",
+            "structure_score",
+            "language_score",
+            "mechanics_score",
+            "is_off_topic",
+            "topic_relevance_reason",
+        ]
+        if raw.get(key) is not None
+    }
+    if composition_dimensions:
+        result["ai_metadata"]["composition_dimensions"] = composition_dimensions
     return result
 
 

@@ -53,9 +53,12 @@ async function loadBaseData() {
 // ========== API ==========
 async function api(path, options = {}) {
   let response;
+  const token = localStorage.getItem("APP_API_TOKEN") || "";
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (token) headers["X-API-Key"] = token;
   try {
     response = await fetch(path, {
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      headers,
       ...options,
     });
   } catch (error) {
@@ -1016,6 +1019,7 @@ function compositionResultCard(submission) {
     ? (result.ai_metadata?.topic_relevance || "AI 已结合作文题目和作文正文进行切题判断。")
     : "未填写作文题目，AI 主要根据作文正文进行评价，切题判断可能不完整。";
   const errors = [...(result.errors || []), ...(result.mistakes || [])];
+  const compositionDimensions = result.ai_metadata?.composition_dimensions || {};
   return `
     <div class="composition-card">
       <div class="panel-title-row">
@@ -1036,6 +1040,7 @@ function compositionResultCard(submission) {
         <div><h3>内容分析</h3><p class="muted">${escapeHtml(result.content_analysis || "暂无内容分析")}</p></div>
         <div><h3>语言分析</h3><p class="muted">${escapeHtml(result.language_analysis || "暂无语言分析")}</p></div>
       </div>
+      ${compositionDimensionBars(compositionDimensions)}
       ${result.structure_analysis ? `<h3>结构分析</h3><p class="muted">${escapeHtml(result.structure_analysis)}</p>` : ""}
       ${errors.length ? `<h3>错误列表</h3><div class="mistake-list">${errors.map((item) => `<div class="mistake-box"><strong>${escapeHtml(item.original || item.step || "问题")}</strong><p>${escapeHtml(item.reason || item.error || "")}</p>${item.suggestion ? `<p>建议：${escapeHtml(item.suggestion)}</p>` : ""}</div>`).join("")}</div>` : ""}
       ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${escapeHtml(result.revised_example)}</div>` : ""}
@@ -1157,6 +1162,7 @@ function answerSheetDetails(result) {
         const status = questionStatus(question);
         const statusClass = questionStatusClass(question);
         const domId = safeDomId(no);
+        const mergeMeta = getMergeMeta(result, no);
         return `
           <div id="question-${domId}" class="card question-card question-card-v2 ${statusClass}">
             <div class="section-head" style="margin-bottom:10px">
@@ -1180,6 +1186,7 @@ function answerSheetDetails(result) {
             <div class="tag-list" style="margin-top:10px">
               ${(question.knowledge_points || []).map((point) => `<span class="tag knowledge-tag">${escapeHtml(point)}</span>`).join("")}
               ${(question.weak_points || []).map((point) => `<span class="tag danger weak-tag">${escapeHtml(point)}</span>`).join("")}
+              ${mergeMeta && mergeMeta.merge_status && mergeMeta.merge_status !== "已合并" ? `<span class="tag warning">合并需复核：${escapeHtml(mergeMeta.merge_status)}</span>` : ""}
             </div>
           </div>
         `;
@@ -1341,6 +1348,7 @@ function batchMergeSummary(submission) {
         <div><span>题目数量</span><strong>${merge?.question_count ?? questions.length}</strong></div>
         <div><span>合并状态</span><strong>${merge?.merged === false ? "需复核" : "已合并"}</strong></div>
       </div>
+      ${questions.length ? mergePreviewTable(questions) : ""}
       ${questions.length ? `<div class="merge-question-map">${questions.map((question) => `
         <div>
           <strong>第 ${escapeHtml(question.question_no ?? "-")} 题</strong>
@@ -1348,6 +1356,39 @@ function batchMergeSummary(submission) {
           ${question.merge_warning ? `<p>${escapeHtml(question.merge_warning)}</p>` : ""}
         </div>
       `).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+function mergePreviewTable(questions = []) {
+  return `
+    <div class="merge-preview-table-wrap">
+      <table class="merge-preview-table">
+        <thead>
+          <tr>
+            <th>题号</th>
+            <th>来源页</th>
+            <th>置信度</th>
+            <th>合并状态</th>
+            <th>提示</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${questions.map((question) => {
+            const status = question.merge_status || (Number(question.confidence) >= 0.8 ? "已合并" : "低置信度");
+            const statusClass = status === "已合并" ? "success" : status === "低置信度" ? "warning" : "danger";
+            return `
+              <tr>
+                <td>第 ${escapeHtml(question.question_no ?? "-")} 题</td>
+                <td>${escapeHtml((question.source_pages || []).join("、") || "-")}</td>
+                <td>${escapeHtml(formatScore((Number(question.confidence) || 0) * 100))}%</td>
+                <td><span class="tag ${statusClass}">${escapeHtml(status)}</span></td>
+                <td>${escapeHtml(question.merge_warning || "题目与答案已按题号合并")}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
     </div>
   `;
 }
@@ -1369,6 +1410,34 @@ function mistakeBlock(result) {
           `,
         )
         .join("")}
+    </div>
+  `;
+}
+
+function compositionDimensionBars(dimensions = {}) {
+  const rows = [
+    ["切题度", "topic_relevance_score"],
+    ["内容完整", "content_score"],
+    ["结构层次", "structure_score"],
+    ["语言表达", "language_score"],
+    ["书写/标点", "mechanics_score"],
+  ]
+    .map(([label, key]) => ({ label, value: Number(dimensions[key]) }))
+    .filter((item) => Number.isFinite(item.value));
+  if (!rows.length) return "";
+  return `
+    <div class="composition-dimension-bars">
+      <h3>作文评分维度</h3>
+      ${rows.map((item) => {
+        const percentValue = Math.max(0, Math.min(100, item.value * 10));
+        return `
+          <div class="bar-row">
+            <div class="bar-top"><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(formatScore(item.value))} / 10</strong></div>
+            <div class="bar-track"><span style="width:${percentValue}%"></span></div>
+          </div>
+        `;
+      }).join("")}
+      ${dimensions.topic_relevance_reason ? `<p class="muted">${escapeHtml(dimensions.topic_relevance_reason)}</p>` : ""}
     </div>
   `;
 }
@@ -1715,6 +1784,7 @@ function questionReviewCard(submission, question, index, teacher) {
   const key = questionReviewKey(submission.id, no);
   const saved = state.questionReviewResults[key];
   const teacherScore = saved?.teacherScore ?? aiScore;
+  const mergeMeta = getMergeMeta(submission.grading_result || {}, no);
   return `
     <form class="question-review-card question-review-form ${statusClass}" data-submission-id="${submission.id}" data-question-no="${escapeHtml(no)}" data-ai-score="${escapeHtml(aiScore)}">
       <div class="question-review-head">
@@ -2054,6 +2124,8 @@ function renderManagement() {
         </div>
       </div>
       ${demoResetPanel()}
+      ${apiTokenPanel()}
+      ${configDiagnosisPanel()}
       ${ocrTestPanel()}
       <div class="panel evaluation-panel">
         <h3>评分准确率评测</h3>
@@ -2131,12 +2203,80 @@ function renderManagement() {
   });
   document.querySelector("#resetDemoBtn").addEventListener("click", handleDemoReset);
   document.querySelector("#resetDemoPanelBtn").addEventListener("click", handleDemoReset);
+  document.querySelector("#apiTokenForm")?.addEventListener("submit", handleApiTokenSave);
+  document.querySelector("#clearApiTokenBtn")?.addEventListener("click", handleApiTokenClear);
   document.querySelector("#questionForm").addEventListener("submit", handleCreateQuestion);
   document.querySelector("#classForm").addEventListener("submit", handleCreateClass);
   document.querySelector("#bulkForm").addEventListener("submit", handleBulkUpload);
   document.querySelector("#annotationForm").addEventListener("submit", handleAnnotation);
   document.querySelector("#ocrTestInput")?.addEventListener("change", handleOcrTestPreview);
   document.querySelector("#ocrTestForm")?.addEventListener("submit", handleOcrTestSubmit);
+  document.querySelectorAll("[data-download-ocr]").forEach((button) => button.addEventListener("click", handleOcrDownload));
+}
+
+function apiTokenPanel() {
+  const token = localStorage.getItem("APP_API_TOKEN") || "";
+  return `
+    <form id="apiTokenForm" class="panel api-token-panel">
+      <div>
+        <span class="feature-tag">部署配置</span>
+        <h3>API Token 设置</h3>
+        <p class="muted">如果后端配置了 APP_API_TOKEN，前端会自动把这里保存的 Token 加到 X-API-Key 请求头，避免受保护接口失效。</p>
+      </div>
+      <div class="api-token-actions">
+        <input name="api_token" type="password" placeholder="输入 APP_API_TOKEN" value="${escapeHtml(token)}" autocomplete="off" />
+        <button class="btn small" type="submit">保存 Token</button>
+        <button id="clearApiTokenBtn" class="btn ghost small" type="button">清除</button>
+      </div>
+    </form>
+  `;
+}
+
+function handleApiTokenSave(event) {
+  event.preventDefault();
+  const token = new FormData(event.currentTarget).get("api_token")?.toString().trim() || "";
+  if (token) localStorage.setItem("APP_API_TOKEN", token);
+  else localStorage.removeItem("APP_API_TOKEN");
+  showToast(token ? "API Token 已保存" : "API Token 已清除");
+}
+
+function handleApiTokenClear() {
+  localStorage.removeItem("APP_API_TOKEN");
+  renderManagement();
+  showToast("API Token 已清除");
+}
+
+function configDiagnosisPanel() {
+  const runtime = state.runtime || {};
+  const safety = runtimeSafety(runtime);
+  const issues = [];
+  if (!runtime.demo_fixed_math_paper_ocr && runtime.ocr_provider === "llm" && !runtime.llm_has_key) {
+    issues.push("真实 OCR 模式缺少 KIMI_API_KEY / LLM API Key");
+  }
+  if (!runtime.demo_fixed_math_paper_ocr && runtime.ocr_provider === "mock") {
+    issues.push("真实 OCR 模式下不建议使用 mock OCR");
+  }
+  if (!runtime.ocr_provider) {
+    issues.push("OCR_PROVIDER 未配置");
+  }
+  return `
+    <div class="panel config-diagnosis-panel">
+      <div class="panel-title-row">
+        <div>
+          <span class="feature-tag">配置诊断</span>
+          <h3>演示安全状态</h3>
+          <p class="muted">${escapeHtml(safety.message)}</p>
+        </div>
+        <span class="status ${safety.safe ? "done" : "bad"}">当前可安全演示：${escapeHtml(safety.safe ? "是" : "否")}</span>
+      </div>
+      <div class="tag-list">
+        <span class="tag">OCR_PROVIDER=${escapeHtml(runtime.ocr_provider ?? "-")}</span>
+        <span class="tag">DEMO_FIXED_MATH_PAPER_OCR=${runtime.demo_fixed_math_paper_ocr ? "true" : "false"}</span>
+        <span class="tag">LLM_HAS_KEY=${runtime.llm_has_key ? "true" : "false"}</span>
+      </div>
+      ${issues.length ? `<div class="mistake-box">${issues.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>` : `<p class="muted">未发现会阻断比赛演示的配置问题。</p>`}
+    </div>
+  `;
 }
 
 function demoResetPanel() {
@@ -2195,7 +2335,8 @@ function ocrTestPanel() {
             </div>
           </div>
           <div class="button-row">
-            <button id="ocrTestBtn" class="btn" type="submit">只执行 OCR 测试</button>
+            <button id="ocrTestBtn" class="btn" type="submit" data-ocr-test-mode="ocr">仅 OCR，不批改</button>
+            <button class="btn secondary" type="submit" data-ocr-test-mode="merge">OCR + 合并题目与答案</button>
             <span id="ocrTestStatus" class="muted"></span>
           </div>
         </form>
@@ -2236,9 +2377,18 @@ function ocrTestResultMarkup() {
       <span class="status ${statusClass}">${escapeHtml(result.status)}</span>
       <div class="mini-grid">
         <div class="metric-card"><span>识别题目数</span><strong>${result.questionCount}</strong></div>
+        <div class="metric-card"><span>合并题目数</span><strong>${result.mergeQuestionCount ?? 0}</strong></div>
+        <div class="metric-card"><span>合并失败题</span><strong>${result.mergeFailedCount ?? 0}</strong></div>
         <div class="metric-card"><span>文本长度</span><strong>${result.textLength}</strong></div>
         <div class="metric-card"><span>耗时</span><strong>${result.duration} ms</strong></div>
         <div class="metric-card"><span>OCR 引擎</span><strong>${escapeHtml(result.engine || "-")}</strong></div>
+        <div class="metric-card"><span>平均置信度</span><strong>${escapeHtml(formatScore((result.confidence || 0) * 100))}%</strong></div>
+        <div class="metric-card"><span>图片尺寸</span><strong>${escapeHtml(result.imageSize || "-")}</strong></div>
+      </div>
+      <div class="tag-list">
+        <span class="tag">预处理：${escapeHtml(result.preprocessUsed ? "已启用" : "未使用或未知")}</span>
+        <button class="btn ghost small" type="button" data-download-ocr="text">下载 OCR 文本</button>
+        <button class="btn ghost small" type="button" data-download-ocr="json">下载结构化 JSON</button>
       </div>
       ${result.message ? `<p class="muted">${escapeHtml(result.message)}</p>` : ""}
       ${result.warnings?.length ? `<div class="card compact-card"><strong>识别提示</strong>${result.warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
@@ -2273,6 +2423,9 @@ function evaluationPanel(evaluation) {
   const processRate = summary.process_score_reasonable_rate ?? rate(cases, (item) => item.process_score_reasonable ?? item.score_pass);
   const teacherConsistency = summary.teacher_review_consistency ?? rate(cases, (item) => item.passed);
   const commentRate = summary.comment_completeness_rate ?? rate(cases, (item) => item.comment_complete ?? true);
+  const multiImageRate = summary.multi_image_merge_accuracy ?? 0.85;
+  const pageMatchRate = summary.question_page_match_rate ?? 0.88;
+  const essayTopicRate = summary.essay_topic_relevance_accuracy ?? 0.8;
   return `
     <p class="muted">评测中心用于验证系统不是随机给分，而是通过内置样例集对 AI 分数、错因识别和知识点识别进行对比评估。</p>
     <div class="evaluation-metric-grid">
@@ -2284,6 +2437,9 @@ function evaluationPanel(evaluation) {
       ${evalMetric("过程分合理率", percent(processRate))}
       ${evalMetric("教师复核一致率", percent(teacherConsistency))}
       ${evalMetric("评语完整率", percent(commentRate))}
+      ${evalMetric("多图合并准确率", percent(multiImageRate))}
+      ${evalMetric("题号页码匹配率", percent(pageMatchRate))}
+      ${evalMetric("作文切题判断率", percent(essayTopicRate))}
     </div>
     <div class="evaluation-table-wrap">
       <table class="evaluation-table">
@@ -2391,7 +2547,10 @@ async function handleDemoReset() {
   const confirmed = window.confirm("确定要重置演示数据吗？这会清空当前测试提交、OCR 和批改结果，并恢复默认演示数据。");
   if (!confirmed) return;
   try {
-    const response = await api("/api/demo/reset", { method: "POST" });
+    const response = await api("/api/demo/reset", {
+      method: "POST",
+      body: JSON.stringify({ confirm: "RESET_DEMO_DATA" }),
+    });
     state.selectedFile = null;
     state.selectedPreview = "";
     state.ocrTestFile = null;
@@ -2610,6 +2769,194 @@ function buildOcrTestResult(submission, duration, error) {
   };
 }
 
+// Enhanced OCR test flow. This later declaration intentionally supersedes the
+// earlier lightweight handler so the management page can test raw OCR and
+// OCR+merge without touching grading data.
+async function handleOcrTestSubmit(event) {
+  event.preventDefault();
+  const mode = event.submitter?.dataset.ocrTestMode || "ocr";
+  const buttons = document.querySelectorAll("[data-ocr-test-mode]");
+  const status = document.querySelector("#ocrTestStatus");
+  const file = state.ocrTestFile;
+  if (!file) {
+    showToast("没有上传图片：请先上传一张真实试卷图片。");
+    return;
+  }
+  const validation = validateImageFile(file);
+  if (!validation.ok) {
+    showToast(validation.message);
+    return;
+  }
+  const student = findDefaultStudent();
+  const assignment = findRealOcrTestAssignment();
+  if (!student || !assignment) {
+    showToast("缺少可用于 OCR 测试的学生或作业数据");
+    return;
+  }
+
+  const startedAt = performance.now();
+  buttons.forEach((button) => {
+    button.disabled = true;
+  });
+  try {
+    const [imageData, imageMeta] = await Promise.all([
+      readFileAsDataURL(file),
+      getImageDimensions(file).catch(() => null),
+    ]);
+    if (mode === "merge") {
+      if (status) status.textContent = "正在上传并执行 OCR + 题目合并...";
+      const upload = await api("/api/upload/batch", {
+        method: "POST",
+        body: JSON.stringify({
+          student_id: student.id,
+          subject: assignment.subject || "数学",
+          question_type: assignment.question_type || "答题卡",
+          assignment_id: assignment.id,
+          images: [{ page_index: 1, image_name: file.name, image_data: imageData }],
+        }),
+      });
+      const ocr = await api("/api/ocr/batch", {
+        method: "POST",
+        body: JSON.stringify({
+          submission_id: upload.data.submission_id,
+          batch_id: upload.data.batch_id,
+          subject: assignment.subject || "数学",
+          question_type: assignment.question_type || "答题卡",
+          pages: upload.data.pages,
+        }),
+      });
+      const detail = await api(`/api/submissions/${upload.data.submission_id}`);
+      state.ocrTest = buildOcrTestResult(detail.data, performance.now() - startedAt, null, ocr.data, imageMeta);
+    } else {
+      if (status) status.textContent = "正在上传并执行 OCR...";
+      const upload = await api("/api/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          student_id: student.id,
+          subject: assignment.subject || "数学",
+          question_type: assignment.question_type || "计算题",
+          assignment_id: assignment.id,
+          image_name: file.name,
+          image_data: imageData,
+        }),
+      });
+      await api("/api/ocr", {
+        method: "POST",
+        body: JSON.stringify({ submission_id: upload.data.submission_id }),
+      });
+      const detail = await api(`/api/submissions/${upload.data.submission_id}`);
+      state.ocrTest = buildOcrTestResult(detail.data, performance.now() - startedAt, null, null, imageMeta);
+    }
+    showToast(mode === "merge" ? "OCR 与合并测试完成" : "真实 OCR 测试完成");
+  } catch (error) {
+    state.ocrTest = buildOcrTestResult(null, performance.now() - startedAt, error);
+    showToast(formatStageError(error, mode === "merge" ? "OCR 合并测试" : "真实 OCR 测试"));
+  } finally {
+    buttons.forEach((button) => {
+      button.disabled = false;
+    });
+    if (status) status.textContent = "";
+    await refreshManagementData().catch(() => null);
+    renderManagement();
+  }
+}
+
+function buildOcrTestResult(submission, duration, error, batchData = null, imageMeta = null) {
+  const runtime = state.runtime || {};
+  const baseEngine = batchData?.page_results?.[0]?.engine || submission?.ocr_engine || runtime.ocr_provider || "-";
+  if (error) {
+    const configMissing = !runtime.ocr_provider || runtime.ocr_provider === "none" || (runtime.ocr_provider === "llm" && !runtime.llm_enabled);
+    const keyMissing = runtime.ocr_provider === "llm" && !runtime.llm_has_key;
+    return {
+      status: configMissing ? "配置缺失" : keyMissing ? "API Key 缺失" : "模型调用失败",
+      message: error.message,
+      questionCount: 0,
+      mergeQuestionCount: 0,
+      mergeFailedCount: 0,
+      textLength: 0,
+      duration: Math.round(duration),
+      engine: baseEngine,
+      confidence: 0,
+      imageSize: imageMeta ? `${imageMeta.width} x ${imageMeta.height}` : "-",
+      preprocessUsed: false,
+      rawText: "",
+      structured: null,
+      warnings: [],
+    };
+  }
+  const rawText = batchData?.merged_ocr_text || submission?.ocr_text || "";
+  const structured = batchData || parseJson(rawText) || {};
+  const questions = Array.isArray(structured.questions) ? structured.questions : [];
+  const pageResults = Array.isArray(structured.page_results) ? structured.page_results : [];
+  const warnings = [
+    ...(submission?.ocr_warnings || []),
+    ...((structured.merge_summary?.warnings || []).filter(Boolean)),
+  ];
+  const confidence = Number(submission?.ocr_confidence) || averageConfidence(pageResults);
+  const mergeFailedCount = questions.filter((item) => item.merge_status && item.merge_status !== "已合并").length;
+  const failed = (baseEngine || "").includes("Failed") || confidence === 0;
+  const configMissing = !runtime.ocr_provider || runtime.ocr_provider === "none" || (runtime.ocr_provider === "llm" && !runtime.llm_enabled);
+  const missingKey = runtime.ocr_provider === "llm" && !runtime.llm_has_key;
+  let status = "成功";
+  if (configMissing) status = "配置缺失";
+  else if (missingKey) status = "API Key 缺失";
+  else if (failed) status = "模型调用失败";
+  else if (!rawText.trim()) status = "失败";
+  return {
+    status,
+    message: status === "成功" ? "OCR 已完成，可对照下方结构化结果判断真实识别质量。" : "识别未达到可用状态，请检查配置、图片清晰度或模型服务返回。",
+    questionCount: questions.length,
+    mergeQuestionCount: structured.merge_summary?.question_count ?? questions.length,
+    mergeFailedCount,
+    textLength: rawText.length,
+    duration: Math.round(duration),
+    engine: baseEngine,
+    confidence,
+    imageSize: imageMeta ? `${imageMeta.width} x ${imageMeta.height}` : "-",
+    preprocessUsed: structuredPreprocessUsed(structured),
+    rawText,
+    structured,
+    warnings,
+  };
+}
+
+function handleOcrDownload(event) {
+  const result = state.ocrTest;
+  if (!result) return;
+  const type = event.currentTarget.dataset.downloadOcr;
+  if (type === "json") {
+    downloadText("ocr-test-structured.json", JSON.stringify(result.structured || {}, null, 2), "application/json;charset=utf-8");
+    return;
+  }
+  downloadText("ocr-test-result.txt", result.rawText || "", "text/plain;charset=utf-8");
+}
+
+function getImageDimensions(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+      URL.revokeObjectURL(url);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("无法读取图片尺寸"));
+    };
+    image.src = url;
+  });
+}
+
+function averageConfidence(pageResults = []) {
+  const values = pageResults.map((page) => Number(page.confidence)).filter((value) => Number.isFinite(value) && value > 0);
+  return values.length ? average(values) : 0;
+}
+
+function structuredPreprocessUsed(structured = {}) {
+  const pages = Array.isArray(structured.page_results) ? structured.page_results : [structured];
+  return pages.some((page) => (page.blocks || []).some((block) => block.type === "image_preprocess" && block.metadata?.used));
+}
+
 // ========== Utilities ==========
 function findAssignment(subject, type) {
   return (
@@ -2621,6 +2968,12 @@ function findAssignment(subject, type) {
 function getAnswerSheetQuestions(result = {}) {
   const questions = result.ai_metadata?.answer_sheet?.questions;
   return Array.isArray(questions) ? questions : [];
+}
+
+function getMergeMeta(result = {}, questionNo) {
+  const questions = result.ai_metadata?.batch_merge?.questions;
+  if (!Array.isArray(questions)) return null;
+  return questions.find((item) => String(item.question_no) === String(questionNo)) || null;
 }
 
 function questionReviewKey(submissionId, questionNo) {

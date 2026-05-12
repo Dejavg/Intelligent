@@ -71,6 +71,10 @@ class ClassCreateRequest(BaseModel):
     teacher_name: str = ""
 
 
+class DemoResetRequest(BaseModel):
+    confirm: str = ""
+
+
 class BulkUploadItem(BaseModel):
     student_id: int
     assignment_id: int

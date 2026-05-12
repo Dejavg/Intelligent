@@ -413,6 +413,19 @@ class GradingService:
                     if essay_prompt
                     else "未填写作文题目，AI 主要根据作文正文进行评价，切题判断可能不完整。"
                 ),
+                "composition_dimensions": {
+                    "topic_relevance_score": 8 if essay_prompt else 6,
+                    "content_score": content,
+                    "structure_score": structure,
+                    "language_score": grammar + vocabulary,
+                    "mechanics_score": spelling,
+                    "is_off_topic": False,
+                    "topic_relevance_reason": (
+                        "作文基本围绕周末活动展开，但细节还可以更丰富。"
+                        if essay_prompt
+                        else "未提供作文题目，只能根据正文主题进行粗略判断。"
+                    ),
+                },
             },
         }
 
@@ -459,6 +472,19 @@ class GradingService:
                     if essay_prompt
                     else "未填写作文题目，AI 主要根据作文正文进行评价，切题判断可能不完整。"
                 ),
+                "composition_dimensions": {
+                    "topic_relevance_score": min(10, theme + 4),
+                    "content_score": min(10, content + 3),
+                    "structure_score": min(10, structure + 3),
+                    "language_score": min(10, language + 3),
+                    "mechanics_score": writing,
+                    "is_off_topic": theme <= 2,
+                    "topic_relevance_reason": (
+                        "文章能够围绕题目展开，中心基本明确。"
+                        if essay_prompt
+                        else "未提供作文题目，切题判断主要依据正文关键词与主题表达。"
+                    ),
+                },
             },
         }
 
@@ -586,6 +612,7 @@ def _batch_merge_metadata(page_results: list[dict], questions: list[dict]) -> di
                 "question_no": item.get("question_no"),
                 "source_pages": item.get("source_pages", []),
                 "confidence": item.get("confidence"),
+                "merge_status": item.get("merge_status", ""),
                 "merge_warning": item.get("merge_warning", ""),
             }
             for item in questions

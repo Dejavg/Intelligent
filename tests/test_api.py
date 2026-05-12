@@ -7,6 +7,10 @@ from backend.app.database import SessionLocal, UPLOAD_DIR, init_db
 from backend.app.main import app
 from backend.app.models import Assignment, ClassRoom, Submission
 from backend.app.services.llm import normalize_answer_sheet_grading
+from backend.app.settings import settings
+
+
+VALID_1X1_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
 
 
 def cleanup_demo_rows():
@@ -28,12 +32,15 @@ def cleanup_demo_rows():
 
 class ApiFlowTest(unittest.TestCase):
     def setUp(self):
+        self._demo_fixed_math_paper_ocr = settings.demo_fixed_math_paper_ocr
+        object.__setattr__(settings, "demo_fixed_math_paper_ocr", True)
         cleanup_demo_rows()
         self.client = TestClient(app)
         self.client.__enter__()
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
+        object.__setattr__(settings, "demo_fixed_math_paper_ocr", self._demo_fixed_math_paper_ocr)
         cleanup_demo_rows()
 
     def test_core_demo_flow(self):
@@ -49,7 +56,7 @@ class ApiFlowTest(unittest.TestCase):
                 "subject": "数学",
                 "question_type": "计算题",
                 "image_name": "pytest-bulk.png",
-                "image_data": "",
+                "image_data": VALID_1X1_PNG,
             },
         )
         self.assertEqual(upload.status_code, 200)
@@ -97,7 +104,7 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(bulk.status_code, 200)
         self.assertEqual(bulk.json()["data"]["count"], 1)
 
-        reset = self.client.post("/api/demo/reset")
+        reset = self.client.post("/api/demo/reset", json={"confirm": "RESET_DEMO_DATA"})
         self.assertEqual(reset.status_code, 200)
         self.assertGreaterEqual(reset.json()["data"]["restored_demo_submissions"], 1)
 
@@ -228,7 +235,7 @@ x=4
                 "subject": "自动识别",
                 "question_type": "答题卡",
                 "image_name": "pytest-demo-paper.png",
-                "image_data": "data:image/png;base64,iVBORw0KGgo=",
+                "image_data": VALID_1X1_PNG,
             },
         )
         self.assertEqual(upload.status_code, 200)
@@ -265,8 +272,8 @@ x=4
                 "subject": "自动识别",
                 "question_type": "答题卡",
                 "images": [
-                    {"page_index": 1, "image_name": "pytest-batch-page-1.png", "image_data": "data:image/png;base64,iVBORw0KGgo="},
-                    {"page_index": 2, "image_name": "pytest-batch-page-2.png", "image_data": "data:image/png;base64,iVBORw0KGgo="},
+                    {"page_index": 1, "image_name": "pytest-batch-page-1.png", "image_data": VALID_1X1_PNG},
+                    {"page_index": 2, "image_name": "pytest-batch-page-2.png", "image_data": VALID_1X1_PNG},
                 ],
             },
         )
@@ -320,7 +327,7 @@ x=4
                 "subject": "英语",
                 "question_type": "作文",
                 "image_name": "pytest-essay.png",
-                "image_data": "",
+                "image_data": VALID_1X1_PNG,
                 "essay_prompt": essay_prompt,
             },
         )

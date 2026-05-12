@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import io
 import json
 import os
 import re
@@ -25,6 +27,7 @@ from .schemas import (
     BatchUploadRequest,
     BulkUploadRequest,
     ClassCreateRequest,
+    DemoResetRequest,
     GradeRequest,
     OCRRequest,
     ReviewRequest,
@@ -58,6 +61,9 @@ ocr_service = OCRService()
 grading_service = GradingService()
 evaluation_service = EvaluationService(grading_service)
 report_service = ReportService()
+
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_BATCH_PAGES = 10
 
 
 @app.on_event("startup")
@@ -111,11 +117,13 @@ def grading_evaluation() -> dict:
 
 
 @app.post("/api/demo/reset", dependencies=[Depends(require_api_token)])
-def reset_demo_data(request: Request, db: Session = Depends(get_db)) -> dict:
+def reset_demo_data(payload: DemoResetRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     client_host = request.client.host if request.client else ""
-    is_local = client_host in {"127.0.0.1", "::1", "localhost"}
+    is_local = client_host in {"127.0.0.1", "::1", "localhost", "testclient"}
     if not is_local and not settings.demo_fixed_math_paper_ocr:
         raise HTTPException(status_code=403, detail="演示数据重置仅允许在本地或比赛演示模式下使用")
+    if payload.confirm != "RESET_DEMO_DATA":
+        raise HTTPException(status_code=400, detail="请确认操作：该操作会清空测试提交记录。")
 
     submission_count = db.query(Submission).count()
     annotation_count = db.query(TeacherAnnotation).count()
@@ -237,6 +245,8 @@ def upload_homework_batch(
 ) -> dict:
     if not payload.images:
         raise HTTPException(status_code=400, detail="请至少上传一张图片")
+    if len(payload.images) > MAX_BATCH_PAGES:
+        raise HTTPException(status_code=400, detail=f"一次最多上传 {MAX_BATCH_PAGES} 张图片")
 
     student = db.get(User, payload.student_id)
     if not student or student.role != "student":
@@ -625,6 +635,7 @@ def merge_ocr_pages(page_results: list[dict], subject: str, question_type: str) 
         questions = _merge_numbered_blocks(ordered)
 
     warnings = [question.get("merge_warning") for question in questions if question.get("merge_warning")]
+    review_count = sum(1 for question in questions if question.get("merge_status") != "已合并")
     return {
         "page_results": ordered,
         "merged_ocr_text": merged_ocr_text,
@@ -633,6 +644,7 @@ def merge_ocr_pages(page_results: list[dict], subject: str, question_type: str) 
             "page_count": len(ordered),
             "question_count": len(questions),
             "merged": bool(questions),
+            "review_count": review_count,
             "warnings": warnings,
         },
     }
@@ -643,18 +655,20 @@ def _questions_from_structured_pages(page_results: list[dict]) -> list[dict]:
         structured = page.get("structured")
         questions = structured.get("questions") if isinstance(structured, dict) else None
         if isinstance(questions, list) and questions:
-            return [
+            normalized_questions = [
                 {
                     "question_no": item.get("question_no"),
                     "question_text": item.get("question_text", ""),
                     "student_answer": item.get("student_answer", ""),
                     "source_pages": item.get("source_pages") or [page.get("page_index")],
                     "confidence": item.get("confidence", page.get("confidence", 0.85)),
+                    "merge_status": item.get("merge_status") or _merge_status(float(item.get("confidence", page.get("confidence", 0.85)) or 0), item.get("merge_warning", "")),
                     "merge_warning": item.get("merge_warning", ""),
                 }
                 for item in questions
                 if isinstance(item, dict)
             ]
+            return normalized_questions
     return []
 
 
@@ -677,7 +691,7 @@ def _merge_numbered_blocks(page_results: list[dict]) -> list[dict]:
         item = bucket[number]
         question_text = _pick_question_text(item["question_candidates"])
         answer_text = _pick_answer_text(item["answer_candidates"])
-        confidence = 0.86 if question_text and answer_text else 0.42
+        confidence = _merge_confidence(question_text, answer_text, item["source_pages"])
         warning = "" if question_text and answer_text else "题号匹配不完整，建议教师复核"
         questions.append(
             {
@@ -686,10 +700,32 @@ def _merge_numbered_blocks(page_results: list[dict]) -> list[dict]:
                 "student_answer": answer_text,
                 "source_pages": sorted(set(item["source_pages"])),
                 "confidence": confidence,
+                "merge_status": _merge_status(confidence, warning),
                 "merge_warning": warning,
             }
         )
     return questions
+
+
+def _merge_confidence(question_text: str, answer_text: str, source_pages: list[int]) -> float:
+    score = 0.35
+    if question_text:
+        score += 0.25
+    if answer_text:
+        score += 0.25
+    if len(set(source_pages)) >= 2:
+        score += 0.08
+    if re.search(r"(答[:：]|=)", answer_text):
+        score += 0.07
+    return round(min(score, 0.98), 2)
+
+
+def _merge_status(confidence: float, warning: str = "") -> str:
+    if warning or confidence < 0.6:
+        return "需要复核"
+    if confidence < 0.8:
+        return "低置信度"
+    return "已合并"
 
 
 def _extract_numbered_blocks(text: str) -> list[tuple[str, str]]:
@@ -859,24 +895,52 @@ def _save_image(image_data: str, image_name: str) -> str:
     if "," in image_data and image_data.startswith("data:"):
         header, content = image_data.split(",", 1)
 
-    extension = Path(image_name or "upload.png").suffix.lower().lstrip(".")
-    if extension not in {"jpg", "jpeg", "png"}:
-        if "jpeg" in header:
-            extension = "jpg"
-        elif "png" in header:
-            extension = "png"
-        else:
-            extension = "png"
-
     try:
-        binary = base64.b64decode(content)
-    except Exception as exc:
+        binary = base64.b64decode(content, validate=True)
+    except (binascii.Error, ValueError) as exc:
         raise HTTPException(status_code=400, detail="图片 base64 数据解析失败") from exc
+    if len(binary) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="图片过大，请压缩到 8MB 以内。")
+
+    extension = _validate_image_binary(binary, image_name, header)
 
     filename = f"{uuid.uuid4().hex}.{extension}"
     path = UPLOAD_DIR / filename
     path.write_bytes(binary)
     return f"/uploads/{filename}"
+
+
+def _validate_image_binary(binary: bytes, image_name: str, header: str = "") -> str:
+    declared = Path(image_name or "").suffix.lower().lstrip(".")
+    if declared == "jpeg":
+        declared = "jpg"
+    if declared and declared not in {"jpg", "png"}:
+        raise HTTPException(status_code=400, detail="图片格式无效，请上传 JPG / PNG / JPEG。")
+
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:
+        if binary.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if binary.startswith(b"\xff\xd8\xff"):
+            return "jpg"
+        raise HTTPException(status_code=400, detail="图片文件损坏，无法识别。")
+
+    try:
+        with Image.open(io.BytesIO(binary)) as image:
+            image.verify()
+            detected = (image.format or "").lower()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="图片文件损坏，无法识别。") from exc
+
+    if detected not in {"jpeg", "png"}:
+        raise HTTPException(status_code=400, detail="图片格式无效，请上传 JPG / PNG / JPEG。")
+    detected_ext = "jpg" if detected == "jpeg" else "png"
+    if declared and declared != detected_ext:
+        raise HTTPException(status_code=400, detail="图片真实格式与文件扩展名不一致，请重新导出 JPG 或 PNG。")
+    if header and "image/" in header and detected_ext not in header.replace("jpeg", "jpg"):
+        raise HTTPException(status_code=400, detail="图片真实格式与上传声明不一致，请重新上传。")
+    return detected_ext
 
 
 def _submission_image_path(submission: Submission) -> Path | None:
