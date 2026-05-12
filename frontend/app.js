@@ -13,6 +13,8 @@ const state = {
   uploadStep: 1,
   selectedFile: null,
   selectedPreview: "",
+  selectedFiles: [],
+  selectedPreviews: [],
   lastSubmissionId: null,
   quickDemoRunning: false,
   ocrTestFile: null,
@@ -287,11 +289,13 @@ function renderStudent() {
             <label for="typeSelect">题型</label>
             <select id="typeSelect">${types.map((type) => `<option value="${type}">${type}</option>`).join("")}</select>
           </div>
+          <div id="essayPromptWrap">${compositionPromptMarkup(defaultSubject, types[0])}</div>
           <div id="assignmentInfo" class="card assignment-card">${assignmentInfo(defaultSubject, types[0])}</div>
           <div class="field upload-field">
             <label for="imageInput">上传试卷图片</label>
-            <div id="uploadDrop" class="upload-drop">
-              <input id="imageInput" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" />
+            <p class="muted">支持上传多张图片，请按试卷顺序上传。例如：先上传题目页，再上传答题页；也可以上传单张完整答题卡。</p>
+            <div id="uploadDrop" class="upload-drop ${state.selectedFiles.length ? "has-files" : ""}">
+              <input id="imageInput" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" multiple />
               <div id="previewWrap">${uploadPreviewMarkup()}</div>
             </div>
           </div>
@@ -330,14 +334,17 @@ function renderStudent() {
     const nextTypes = getTypes(subjectSelect.value);
     typeSelect.innerHTML = nextTypes.map((type) => `<option value="${type}">${type}</option>`).join("");
     document.querySelector("#assignmentInfo").innerHTML = assignmentInfo(subjectSelect.value, typeSelect.value);
+    document.querySelector("#essayPromptWrap").innerHTML = compositionPromptMarkup(subjectSelect.value, typeSelect.value);
   });
   typeSelect.addEventListener("change", () => {
     document.querySelector("#assignmentInfo").innerHTML = assignmentInfo(subjectSelect.value, typeSelect.value);
+    document.querySelector("#essayPromptWrap").innerHTML = compositionPromptMarkup(subjectSelect.value, typeSelect.value);
   });
   imageInput.addEventListener("change", handlePreview);
   document.querySelector("#uploadDrop").addEventListener("dragover", handleUploadDrag);
   document.querySelector("#uploadDrop").addEventListener("dragleave", handleUploadDrag);
   document.querySelector("#uploadDrop").addEventListener("drop", handleUploadDrop);
+  document.querySelector("#uploadDrop").addEventListener("click", handleUploadListAction);
   uploadForm.addEventListener("submit", handleGradeSubmit);
   document.querySelector("#quickDemoStudent")?.addEventListener("click", () => runQuickDemo("student"));
 }
@@ -371,11 +378,45 @@ function updateUploadStep(step) {
 }
 
 function uploadPreviewMarkup() {
-  if (state.selectedPreview) return `<img class="preview" src="${state.selectedPreview}" alt="作业预览" />`;
+  if (state.selectedFiles.length) {
+    return `
+      <div class="multi-upload-list">
+        ${state.selectedFiles.map((file, index) => `
+          <div class="upload-page-card">
+            <div class="upload-page-head">
+              <strong>第 ${index + 1} 页</strong>
+              <span>${escapeHtml(file.name)} · ${formatFileSize(file.size)}</span>
+            </div>
+            ${state.selectedPreviews[index] ? `<img class="preview page-thumb" src="${state.selectedPreviews[index]}" alt="第 ${index + 1} 页预览" />` : ""}
+            <div class="button-row compact-actions">
+              <button class="btn ghost small" type="button" data-page-action="up" data-page-index="${index}" ${index === 0 ? "disabled" : ""}>上移</button>
+              <button class="btn ghost small" type="button" data-page-action="down" data-page-index="${index}" ${index === state.selectedFiles.length - 1 ? "disabled" : ""}>下移</button>
+              <button class="btn ghost small danger-text" type="button" data-page-action="remove" data-page-index="${index}">删除</button>
+            </div>
+          </div>
+        `).join("")}
+        <label class="btn secondary small upload-again" for="imageInput">重新选择图片</label>
+      </div>
+    `;
+  }
   return `
     <div class="upload-empty">
       <strong>拖拽或点击上传数学练习卷</strong>
-      <span>支持 JPG / PNG / JPEG，比赛演示建议上传固定 5 题数学练习卷</span>
+      <span>支持 JPG / PNG / JPEG，可一次选择多张图片并按页码顺序合并批改。</span>
+    </div>
+  `;
+}
+
+function compositionPromptMarkup(subject, type) {
+  if (!isCompositionSelection(subject, type)) return "";
+  const placeholder = subject === "英语"
+    ? "Write a short passage about your weekend. You should write at least 60 words."
+    : "请以《难忘的一天》为题写一篇不少于 600 字的作文。";
+  return `
+    <div class="field essay-prompt-field">
+      <label for="essayPrompt">作文题目 / 写作要求</label>
+      <textarea id="essayPrompt" name="essay_prompt" placeholder="${escapeHtml(placeholder)}"></textarea>
+      <small>建议填写作文题目，以便 AI 判断是否切题；留空时系统会提示切题判断可能不完整。</small>
     </div>
   `;
 }
@@ -391,28 +432,27 @@ function assignmentInfo(subject, type) {
 }
 
 function handlePreview(event) {
-  const file = event.target.files[0];
-  const validation = validateImageFile(file);
+  const files = Array.from(event.target.files || []);
+  const validation = validateImageFiles(files);
   if (!validation.ok) {
-    state.selectedFile = null;
-    state.selectedPreview = "";
-    document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
+    clearSelectedFiles();
+    refreshUploadPreview();
     showToast(validation.message);
     return;
   }
-  state.selectedFile = file || null;
-  if (!file) {
-    state.selectedPreview = "";
-    document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
+  if (!files.length) {
+    clearSelectedFiles();
+    refreshUploadPreview();
     return;
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    state.selectedPreview = reader.result;
-    document.querySelector("#previewWrap").innerHTML = uploadPreviewMarkup();
+  Promise.all(files.map(readFileAsDataURL)).then((previews) => {
+    state.selectedFiles = files;
+    state.selectedPreviews = previews;
+    state.selectedFile = files[0] || null;
+    state.selectedPreview = previews[0] || "";
+    refreshUploadPreview();
     updateUploadStep(2);
-  };
-  reader.readAsDataURL(file);
+  });
 }
 
 function handleUploadDrag(event) {
@@ -423,13 +463,54 @@ function handleUploadDrag(event) {
 function handleUploadDrop(event) {
   event.preventDefault();
   event.currentTarget.classList.remove("is-dragging");
-  const file = event.dataTransfer.files[0];
-  if (!file) return;
+  const files = Array.from(event.dataTransfer.files || []);
+  if (!files.length) return;
   const input = document.querySelector("#imageInput");
   const transfer = new DataTransfer();
-  transfer.items.add(file);
+  files.forEach((file) => transfer.items.add(file));
   input.files = transfer.files;
   handlePreview({ target: input });
+}
+
+function handleUploadListAction(event) {
+  const button = event.target.closest("[data-page-action]");
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const index = Number(button.dataset.pageIndex);
+  const action = button.dataset.pageAction;
+  if (action === "remove") {
+    state.selectedFiles.splice(index, 1);
+    state.selectedPreviews.splice(index, 1);
+  }
+  if (action === "up" && index > 0) {
+    swapUploadPages(index, index - 1);
+  }
+  if (action === "down" && index < state.selectedFiles.length - 1) {
+    swapUploadPages(index, index + 1);
+  }
+  state.selectedFile = state.selectedFiles[0] || null;
+  state.selectedPreview = state.selectedPreviews[0] || "";
+  refreshUploadPreview();
+}
+
+function swapUploadPages(left, right) {
+  [state.selectedFiles[left], state.selectedFiles[right]] = [state.selectedFiles[right], state.selectedFiles[left]];
+  [state.selectedPreviews[left], state.selectedPreviews[right]] = [state.selectedPreviews[right], state.selectedPreviews[left]];
+}
+
+function refreshUploadPreview() {
+  const drop = document.querySelector("#uploadDrop");
+  const wrap = document.querySelector("#previewWrap");
+  if (drop) drop.classList.toggle("has-files", state.selectedFiles.length > 0);
+  if (wrap) wrap.innerHTML = uploadPreviewMarkup();
+}
+
+function clearSelectedFiles() {
+  state.selectedFiles = [];
+  state.selectedPreviews = [];
+  state.selectedFile = null;
+  state.selectedPreview = "";
 }
 
 async function handleGradeSubmit(event) {
@@ -440,7 +521,11 @@ async function handleGradeSubmit(event) {
   const questionType = document.querySelector("#typeSelect").value;
   const assignment = findAssignment(subject, questionType);
   const studentId = Number(document.querySelector("#studentSelect").value);
-  if (!state.selectedFile) {
+  const essayPrompt = document.querySelector("#essayPrompt")?.value?.trim() || "";
+  if (isCompositionSelection(subject, questionType) && !essayPrompt) {
+    showToast("建议填写作文题目，以便 AI 判断是否切题。");
+  }
+  if (!state.selectedFiles.length) {
     status.textContent = "请先上传作业图片，或点击“快速演示：使用固定 5 题数学卷”。";
     showToast("没有上传图片：请先选择 JPG / PNG / JPEG 图片。");
     return;
@@ -451,6 +536,10 @@ async function handleGradeSubmit(event) {
   updateUploadStep(2);
   status.textContent = "上传中...";
   try {
+    if (state.selectedFiles.length > 1) {
+      await submitBatchGradeFlow({ studentId, subject, questionType, assignment, essayPrompt, status });
+      return;
+    }
     const imageData = state.selectedFile ? await readFileAsDataURL(state.selectedFile) : "";
     const upload = await api("/api/upload", {
       method: "POST",
@@ -461,6 +550,7 @@ async function handleGradeSubmit(event) {
         assignment_id: assignment?.id,
         image_name: state.selectedFile?.name || `mock-${subject}.png`,
         image_data: imageData,
+        essay_prompt: essayPrompt,
       }),
     });
     updateUploadStep(3);
@@ -474,7 +564,7 @@ async function handleGradeSubmit(event) {
     status.textContent = "AI 批改中...";
     await api("/api/grade", {
       method: "POST",
-      body: JSON.stringify({ submission_id: submissionId, subject, question_type: questionType }),
+      body: JSON.stringify({ submission_id: submissionId, subject, question_type: questionType, essay_prompt: essayPrompt }),
     });
     state.lastSubmissionId = submissionId;
     updateUploadStep(5);
@@ -488,6 +578,60 @@ async function handleGradeSubmit(event) {
     button.disabled = false;
     if (!keepStatus) status.textContent = "";
   }
+}
+
+async function submitBatchGradeFlow({ studentId, subject, questionType, assignment, essayPrompt, status }) {
+  const images = await Promise.all(
+    state.selectedFiles.map(async (file, index) => ({
+      page_index: index + 1,
+      image_name: file.name,
+      image_data: await readFileAsDataURL(file),
+    })),
+  );
+  const upload = await api("/api/upload/batch", {
+    method: "POST",
+    body: JSON.stringify({
+      student_id: studentId,
+      subject,
+      question_type: questionType,
+      assignment_id: assignment?.id,
+      essay_prompt: essayPrompt,
+      images,
+    }),
+  });
+  const { submission_id: submissionId, batch_id: batchId, pages } = upload.data;
+  updateUploadStep(3);
+  status.textContent = "多页 OCR 识别与顺序合并中...";
+  const ocr = await api("/api/ocr/batch", {
+    method: "POST",
+    body: JSON.stringify({
+      submission_id: submissionId,
+      batch_id: batchId,
+      subject,
+      question_type: questionType,
+      pages,
+    }),
+  });
+  status.textContent = `已合并 ${ocr.data.merge_summary?.question_count ?? 0} 道题，AI 批改中...`;
+  updateUploadStep(4);
+  await api("/api/grade/batch", {
+    method: "POST",
+    body: JSON.stringify({
+      submission_id: submissionId,
+      batch_id: batchId,
+      student_id: studentId,
+      subject,
+      question_type: questionType,
+      merged_ocr_text: ocr.data.merged_ocr_text,
+      questions: ocr.data.questions || [],
+      page_results: ocr.data.page_results || [],
+      essay_prompt: essayPrompt,
+    }),
+  });
+  state.lastSubmissionId = submissionId;
+  updateUploadStep(5);
+  showToast("多图合并批改完成");
+  location.hash = `#result/${submissionId}`;
 }
 
 async function runQuickDemo(source = "home") {
@@ -576,9 +720,8 @@ function applyDemoSelections(student, assignment) {
     const assignmentInfoNode = document.querySelector("#assignmentInfo");
     if (assignmentInfoNode) assignmentInfoNode.innerHTML = assignmentInfo(assignment.subject, assignment.question_type);
   }
-  if (state.selectedPreview) {
-    state.selectedPreview = "";
-    state.selectedFile = null;
+  if (state.selectedPreview || state.selectedFiles.length) {
+    clearSelectedFiles();
     const previewWrap = document.querySelector("#previewWrap");
     if (previewWrap) previewWrap.innerHTML = uploadPreviewMarkup();
   }
@@ -713,10 +856,11 @@ async function renderResult(submissionId) {
                 <p class="muted">保留原始答题卡，便于教师对照复核。</p>
               </div>
             </div>
-            ${submission.image_url ? `<img class="preview paper-preview" src="${submission.image_url}" alt="作业图片" />` : `<div class="empty">暂无图片</div>`}
+            ${paperImageGallery(submission)}
             <h3>OCR 识别结果</h3>
             ${engineInfo(submission)}
             ${ocrPreview(submission)}
+            ${batchMergeSummary(submission)}
           </aside>
           <div class="panel grading-side">
             ${gradingDetail(submission)}
@@ -778,6 +922,34 @@ function scorePanel(submission) {
 function ocrPreview(submission) {
   const paper = parseJson(submission.ocr_text);
   const questions = Array.isArray(paper?.questions) ? paper.questions : [];
+  const pageResults = Array.isArray(paper?.page_results) ? paper.page_results : [];
+  if (pageResults.length) {
+    return `
+      <div class="ocr-paper">
+        <div class="section-head compact">
+          <div>
+            <strong>多图 OCR 结果</strong>
+            <p class="muted">${pageResults.length} 页 · 合并出 ${questions.length} 道题</p>
+          </div>
+        </div>
+        <div class="page-ocr-list">
+          ${pageResults.map((page) => `
+            <div class="ocr-question">
+              <strong>第 ${escapeHtml(page.page_index)} 页 · ${escapeHtml(page.engine || "OCR")}</strong>
+              <p>${escapeHtml(summarizeText(page.ocr_text || "", 180))}</p>
+            </div>
+          `).join("")}
+        </div>
+        ${questions.length ? `<h3>合并后的题目与答案</h3><div class="ocr-question-list">${questions.map((question) => `
+          <div class="ocr-question">
+            <strong>第 ${escapeHtml(question.question_no)} 题 · 来源页 ${escapeHtml((question.source_pages || []).join("、") || "-")}</strong>
+            <p>${escapeHtml(question.question_text || "")}</p>
+            <div class="ocr-steps">${formatStudentAnswer(question.student_answer).split("\n").filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+          </div>
+        `).join("")}</div>` : ""}
+      </div>
+    `;
+  }
   if (!questions.length) {
     return `<div class="ocr-box">${escapeHtml(submission.ocr_text || "暂无 OCR 内容")}</div>`;
   }
@@ -794,7 +966,7 @@ function ocrPreview(submission) {
           <div class="ocr-question">
             <strong>第 ${escapeHtml(question.question_no)} 题</strong>
             <p>${escapeHtml(question.question_text || "")}</p>
-            <div class="ocr-steps">${(question.student_answer || []).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+            <div class="ocr-steps">${formatStudentAnswer(question.student_answer).split("\n").filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
           </div>
         `).join("")}
       </div>
@@ -807,6 +979,7 @@ function gradingDetail(submission) {
   const isComposition = submission.subject === "英语" || submission.subject === "语文";
   return `
     ${resultSummaryCard(submission)}
+    ${compositionResultCard(submission)}
     ${presentationGuide(submission)}
     ${questionQuickNav(result)}
     ${answerSheetDetails(result)}
@@ -832,6 +1005,40 @@ function gradingDetail(submission) {
       <p class="muted">${escapeHtml(result.comment || "暂无评语")}</p>
       <h3>学习建议</h3>
       <p class="muted">${escapeHtml(result.suggestion || "暂无建议")}</p>
+    </div>
+  `;
+}
+
+function compositionResultCard(submission) {
+  if (!isCompositionSelection(submission.subject, submission.question_type)) return "";
+  const result = submission.grading_result || {};
+  const topicRelevance = result.ai_metadata?.topic_relevance || result.ai_metadata?.essay_prompt
+    ? (result.ai_metadata?.topic_relevance || "AI 已结合作文题目和作文正文进行切题判断。")
+    : "未填写作文题目，AI 主要根据作文正文进行评价，切题判断可能不完整。";
+  const errors = [...(result.errors || []), ...(result.mistakes || [])];
+  return `
+    <div class="composition-card">
+      <div class="panel-title-row">
+        <div>
+          <span class="feature-tag">作文批改</span>
+          <h3>作文题目 / 写作要求</h3>
+        </div>
+        <span class="tag">${escapeHtml(submission.subject)} · ${escapeHtml(submission.question_type)}</span>
+      </div>
+      <div class="code-box">${escapeHtml(submission.essay_prompt || "未填写作文题目，建议后续补充写作要求以提升切题判断准确性。")}</div>
+      <h3>OCR 识别出的作文正文</h3>
+      <div class="answer-box"><p>${escapeHtml(submission.ocr_text || "暂无作文正文")}</p></div>
+      <div class="result-two-col">
+        <div><h3>是否切题</h3><p class="muted">${escapeHtml(topicRelevance)}</p></div>
+        <div><h3>优点</h3><div class="tag-list">${(result.strengths || []).map((item) => `<span class="tag success">${escapeHtml(item)}</span>`).join("") || "<span class='muted'>暂无</span>"}</div></div>
+      </div>
+      <div class="result-two-col">
+        <div><h3>内容分析</h3><p class="muted">${escapeHtml(result.content_analysis || "暂无内容分析")}</p></div>
+        <div><h3>语言分析</h3><p class="muted">${escapeHtml(result.language_analysis || "暂无语言分析")}</p></div>
+      </div>
+      ${result.structure_analysis ? `<h3>结构分析</h3><p class="muted">${escapeHtml(result.structure_analysis)}</p>` : ""}
+      ${errors.length ? `<h3>错误列表</h3><div class="mistake-list">${errors.map((item) => `<div class="mistake-box"><strong>${escapeHtml(item.original || item.step || "问题")}</strong><p>${escapeHtml(item.reason || item.error || "")}</p>${item.suggestion ? `<p>建议：${escapeHtml(item.suggestion)}</p>` : ""}</div>`).join("")}</div>` : ""}
+      ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${escapeHtml(result.revised_example)}</div>` : ""}
     </div>
   `;
 }
@@ -1023,6 +1230,7 @@ function buildStudentReportMarkdown(submission) {
 - 班级：${submission.student.class_name || "-"}
 - 作业：${submission.assignment.title}
 - 学科 / 题型：${submission.subject} / ${submission.question_type}
+- 作文题目：${submission.essay_prompt || "-"}
 - 总分：${formatScore(score)} / ${formatScore(full)}
 - 批改引擎：${result.ai_engine || "-"}
 - 批改时间：${submission.created_at || "-"}
@@ -1060,6 +1268,8 @@ function buildGradingJson(submission) {
     student: submission.student,
     assignment: submission.assignment,
     ocr_text: submission.ocr_text,
+    essay_prompt: submission.essay_prompt || "",
+    pages: submission.pages || [],
     total_score: result.score ?? submission.effective_score ?? submission.ai_score,
     full_score: result.full_score ?? submission.grading_full_score ?? submission.assignment.full_score,
     questions: getAnswerSheetQuestions(result),
@@ -1093,6 +1303,52 @@ function engineInfo(submission) {
       ${submission.ocr_confidence == null ? "" : `<span class="tag">置信度：${Number(submission.ocr_confidence).toFixed(2)}</span>`}
     </div>
     ${warnings.length ? `<div class="card" style="margin-bottom:12px"><strong>识别提示</strong>${warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
+  `;
+}
+
+function paperImageGallery(submission) {
+  const pages = Array.isArray(submission.pages) ? submission.pages.filter((page) => page.image_url) : [];
+  if (pages.length > 1) {
+    return `
+      <div class="paper-page-list">
+        ${pages.map((page, index) => `
+          <div class="paper-page-card">
+            <div class="upload-page-head">
+              <strong>第 ${escapeHtml(page.page_index || index + 1)} 页</strong>
+              <span>${escapeHtml(page.image_name || page.filename || "")}</span>
+            </div>
+            <img class="preview paper-preview" src="${escapeHtml(page.image_url)}" alt="第 ${escapeHtml(page.page_index || index + 1)} 页图片" />
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+  if (submission.image_url) return `<img class="preview paper-preview" src="${escapeHtml(submission.image_url)}" alt="作业图片" />`;
+  return `<div class="empty">暂无图片</div>`;
+}
+
+function batchMergeSummary(submission) {
+  const ocr = parseJson(submission.ocr_text);
+  const merge = ocr?.merge_summary || submission.grading_result?.ai_metadata?.batch_merge;
+  const questions = Array.isArray(ocr?.questions) ? ocr.questions : [];
+  const pages = Array.isArray(submission.pages) ? submission.pages : [];
+  if (!merge && pages.length <= 1) return "";
+  return `
+    <div class="merge-summary-card">
+      <h3>合并识别结果</h3>
+      <div class="summary-grid small-grid">
+        <div><span>识别页数</span><strong>${merge?.page_count ?? pages.length}</strong></div>
+        <div><span>题目数量</span><strong>${merge?.question_count ?? questions.length}</strong></div>
+        <div><span>合并状态</span><strong>${merge?.merged === false ? "需复核" : "已合并"}</strong></div>
+      </div>
+      ${questions.length ? `<div class="merge-question-map">${questions.map((question) => `
+        <div>
+          <strong>第 ${escapeHtml(question.question_no ?? "-")} 题</strong>
+          <span>来源页：${escapeHtml((question.source_pages || []).join("、") || "-")} · 置信度 ${escapeHtml(formatScore((Number(question.confidence) || 0) * 100))}%</span>
+          ${question.merge_warning ? `<p>${escapeHtml(question.merge_warning)}</p>` : ""}
+        </div>
+      `).join("")}</div>` : ""}
+    </div>
   `;
 }
 
@@ -1317,6 +1573,7 @@ function reviewPanel(submission) {
           <div><span>批改引擎</span><strong>${escapeHtml(result.ai_engine || "RuleEngine")}</strong></div>
         </div>
         ${teacherAiSummary(submission)}
+        ${teacherCompositionSummary(submission)}
       </div>
       <div class="panel ai-teacher-diff">
         <span class="feature-tag">AI 与教师差异</span>
@@ -1393,6 +1650,28 @@ function teacherAiSummary(submission) {
               .join("")}</div>`
           : `<p class="muted">暂无明显错题，教师可快速确认后返回学生。</p>`
       }
+    </div>
+  `;
+}
+
+function teacherCompositionSummary(submission) {
+  if (!isCompositionSelection(submission.subject, submission.question_type)) return "";
+  const result = submission.grading_result || {};
+  return `
+    <div class="teacher-composition-card">
+      <strong>作文复核信息</strong>
+      <div class="compact-card">
+        <span class="muted">作文题目 / 写作要求</span>
+        <p>${escapeHtml(submission.essay_prompt || "未填写作文题目，建议教师复核切题判断。")}</p>
+      </div>
+      <div class="compact-card">
+        <span class="muted">学生作文正文</span>
+        <p>${escapeHtml(summarizeText(submission.ocr_text || "暂无正文", 220))}</p>
+      </div>
+      <div class="compact-card">
+        <span class="muted">AI 作文评分与评语</span>
+        <p>${escapeHtml(formatScore(submission.ai_score ?? result.score ?? 0))} 分 · ${escapeHtml(result.comment || "暂无 AI 评语")}</p>
+      </div>
     </div>
   `;
 }
@@ -1978,7 +2257,7 @@ function structuredOcrSummary(structured) {
         <div class="ocr-question">
           <strong>第 ${escapeHtml(question.question_no ?? "-")} 题</strong>
           <p>${escapeHtml(question.question_text || "")}</p>
-          <div class="ocr-steps">${(question.student_answer || []).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+          <div class="ocr-steps">${formatStudentAnswer(question.student_answer).split("\n").filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
         </div>
       `).join("")}
     </div>
@@ -2377,6 +2656,17 @@ function getTypes(subject) {
   return unique(state.assignments.filter((item) => item.subject === subject).map((item) => item.question_type));
 }
 
+function isCompositionSelection(subject, type) {
+  const subjectText = String(subject || "");
+  const typeText = String(type || "").toLowerCase();
+  return ["语文", "英语"].includes(subjectText) && (typeText.includes("作文") || typeText.includes("主观") || typeText.includes("essay"));
+}
+
+function formatStudentAnswer(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item ?? "")).join("\n");
+  return String(value ?? "");
+}
+
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -2468,6 +2758,15 @@ function validateImageFile(file) {
   }
   if (file.size > MAX_UPLOAD_BYTES) {
     return { ok: false, message: `图片过大：当前约 ${formatFileSize(file.size)}，建议压缩到 ${formatFileSize(MAX_UPLOAD_BYTES)} 以内。` };
+  }
+  return { ok: true };
+}
+
+function validateImageFiles(files) {
+  if (!files.length) return { ok: true };
+  for (const file of files) {
+    const validation = validateImageFile(file);
+    if (!validation.ok) return validation;
   }
   return { ok: true };
 }

@@ -18,6 +18,11 @@ def cleanup_demo_rows():
             db.delete(submission)
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-demo-paper.png").all():
             db.delete(submission)
+        for submission in db.query(Submission).filter(Submission.batch_id.like("batch_%")).all():
+            if submission.image_name and submission.image_name.startswith("pytest-batch"):
+                db.delete(submission)
+        for submission in db.query(Submission).filter(Submission.image_name == "pytest-essay.png").all():
+            db.delete(submission)
         db.commit()
 
 
@@ -248,6 +253,93 @@ x=4
         self.assertNotIn("72；答", questions[2]["correct_solution"])
         self.assertEqual(questions[3]["score"], 7)
         self.assertEqual(questions[3]["status"], "partial")
+
+    def test_batch_upload_ocr_and_grade_flow(self):
+        assignments = self.client.get("/api/assignments").json()["data"]
+        assignment = next(item for item in assignments if item["subject"] == "自动识别")
+        upload = self.client.post(
+            "/api/upload/batch",
+            json={
+                "student_id": 1,
+                "assignment_id": assignment["id"],
+                "subject": "自动识别",
+                "question_type": "答题卡",
+                "images": [
+                    {"page_index": 1, "image_name": "pytest-batch-page-1.png", "image_data": "data:image/png;base64,iVBORw0KGgo="},
+                    {"page_index": 2, "image_name": "pytest-batch-page-2.png", "image_data": "data:image/png;base64,iVBORw0KGgo="},
+                ],
+            },
+        )
+        self.assertEqual(upload.status_code, 200)
+        payload = upload.json()["data"]
+        self.assertEqual(len(payload["pages"]), 2)
+
+        ocr = self.client.post(
+            "/api/ocr/batch",
+            json={
+                "submission_id": payload["submission_id"],
+                "batch_id": payload["batch_id"],
+                "subject": "自动识别",
+                "question_type": "答题卡",
+                "pages": payload["pages"],
+            },
+        )
+        self.assertEqual(ocr.status_code, 200)
+        ocr_data = ocr.json()["data"]
+        self.assertEqual(ocr_data["merge_summary"]["question_count"], 5)
+        self.assertEqual(ocr_data["questions"][2]["student_answer"].splitlines()[-1], "答：72")
+
+        grade = self.client.post(
+            "/api/grade/batch",
+            json={
+                "submission_id": payload["submission_id"],
+                "batch_id": payload["batch_id"],
+                "student_id": 1,
+                "subject": "自动识别",
+                "question_type": "答题卡",
+                "merged_ocr_text": ocr_data["merged_ocr_text"],
+                "questions": ocr_data["questions"],
+                "page_results": ocr_data["page_results"],
+            },
+        )
+        self.assertEqual(grade.status_code, 200)
+        result = grade.json()["data"]["grading_result"]
+        self.assertEqual(result["score"], 43)
+        self.assertEqual(result["full_score"], 50)
+        self.assertEqual(result["ai_metadata"]["batch_merge"]["page_count"], 2)
+
+    def test_essay_prompt_is_stored_and_used(self):
+        assignments = self.client.get("/api/assignments").json()["data"]
+        assignment = next(item for item in assignments if item["subject"] == "英语")
+        essay_prompt = "Write a short passage about your weekend. You should write at least 60 words."
+        upload = self.client.post(
+            "/api/upload",
+            json={
+                "student_id": 3,
+                "assignment_id": assignment["id"],
+                "subject": "英语",
+                "question_type": "作文",
+                "image_name": "pytest-essay.png",
+                "image_data": "",
+                "essay_prompt": essay_prompt,
+            },
+        )
+        self.assertEqual(upload.status_code, 200)
+        submission_id = upload.json()["data"]["submission_id"]
+        grade = self.client.post(
+            "/api/grade",
+            json={
+                "submission_id": submission_id,
+                "subject": "英语",
+                "question_type": "作文",
+                "ocr_text": "I go to park with my friend. We play football. I very happy.",
+                "essay_prompt": essay_prompt,
+            },
+        )
+        self.assertEqual(grade.status_code, 200)
+        detail = self.client.get(f"/api/submissions/{submission_id}").json()["data"]
+        self.assertEqual(detail["essay_prompt"], essay_prompt)
+        self.assertEqual(detail["grading_result"]["ai_metadata"]["essay_prompt"], essay_prompt)
 
     def test_image_preprocess_creates_enhanced_copy(self):
         try:

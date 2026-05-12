@@ -45,6 +45,9 @@ def _ensure_sqlite_columns() -> None:
             "ocr_engine": "VARCHAR(80)",
             "ocr_confidence": "FLOAT",
             "ocr_warnings": "JSON DEFAULT '[]'",
+            "batch_id": "VARCHAR(80)",
+            "pages": "JSON DEFAULT '[]'",
+            "essay_prompt": "TEXT",
         },
         "grading_results": {
             "ai_engine": "VARCHAR(120)",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import uuid
@@ -19,6 +20,9 @@ from .models import Assignment, ClassRoom, GradingResult, Submission, TeacherAnn
 from .schemas import (
     AnnotationRequest,
     AssignmentCreateRequest,
+    BatchGradeRequest,
+    BatchOCRRequest,
+    BatchUploadRequest,
     BulkUploadRequest,
     ClassCreateRequest,
     GradeRequest,
@@ -30,6 +34,7 @@ from .seed import seed_data
 from .services.grading import GradingService
 from .services.evaluation import EvaluationService
 from .services.ocr import OCRService
+from .services.ocr import demo_math_paper_ocr_data
 from .services.reports import ReportService
 from .settings import settings
 from .services.llm import _resolve_vision_model
@@ -206,6 +211,8 @@ def upload_homework(
         question_type=payload.question_type,
         image_url=image_url,
         image_name=payload.image_name,
+        pages=[],
+        essay_prompt=payload.essay_prompt.strip(),
         status="待批改",
     )
     db.add(submission)
@@ -216,6 +223,64 @@ def upload_homework(
         "data": {
             "submission_id": submission.id,
             "image_url": submission.image_url,
+            "status": submission.status,
+            "assignment": _assignment_to_dict(assignment),
+        }
+    }
+
+
+@app.post("/api/upload/batch")
+def upload_homework_batch(
+    payload: BatchUploadRequest,
+    _: None = Depends(require_api_token),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not payload.images:
+        raise HTTPException(status_code=400, detail="请至少上传一张图片")
+
+    student = db.get(User, payload.student_id)
+    if not student or student.role != "student":
+        raise HTTPException(status_code=404, detail="学生不存在")
+
+    assignment = _resolve_assignment(db, payload)
+    batch_id = f"batch_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    pages: list[dict] = []
+    for index, item in enumerate(payload.images, start=1):
+        page_index = item.page_index or index
+        image_url = _save_image(item.image_data, item.image_name)
+        filename = image_url.rsplit("/", 1)[-1] if image_url else ""
+        pages.append(
+            {
+                "page_index": page_index,
+                "filename": filename,
+                "image_url": image_url,
+                "image_name": item.image_name,
+            }
+        )
+
+    pages.sort(key=lambda page: int(page.get("page_index") or 0))
+    first_page = pages[0] if pages else {}
+    submission = Submission(
+        student_id=student.id,
+        assignment_id=assignment.id,
+        subject=payload.subject,
+        question_type=payload.question_type,
+        image_url=first_page.get("image_url") or "",
+        image_name=first_page.get("image_name") or first_page.get("filename") or "",
+        batch_id=batch_id,
+        pages=pages,
+        essay_prompt=payload.essay_prompt.strip(),
+        status="待批改",
+    )
+    db.add(submission)
+    db.commit()
+    db.refresh(submission)
+
+    return {
+        "data": {
+            "submission_id": submission.id,
+            "batch_id": batch_id,
+            "pages": pages,
             "status": submission.status,
             "assignment": _assignment_to_dict(assignment),
         }
@@ -286,6 +351,66 @@ def run_ocr(payload: OCRRequest, db: Session = Depends(get_db)) -> dict:
     return {"data": {"submission_id": submission.id, "ocr": result.to_dict(), "submission": _submission_to_dict(submission)}}
 
 
+@app.post("/api/ocr/batch")
+def run_ocr_batch(payload: BatchOCRRequest, db: Session = Depends(get_db)) -> dict:
+    submission = _get_batch_submission(db, payload.batch_id, payload.submission_id)
+    assignment = submission.assignment
+    ordered_pages = sorted([_pydantic_dict(page) for page in payload.pages], key=lambda page: int(page.get("page_index") or 0))
+    if not ordered_pages:
+        raise HTTPException(status_code=400, detail="批量 OCR 至少需要一页图片")
+
+    page_results: list[dict] = []
+    if settings.demo_fixed_math_paper_ocr and _is_answer_sheet_mode(payload.subject, payload.question_type, assignment):
+        page_results = _demo_batch_page_results(ordered_pages)
+    else:
+        for page in ordered_pages:
+            temp_submission = Submission(
+                id=(submission.id or 0) * 100 + int(page.get("page_index") or 0),
+                student_id=submission.student_id,
+                assignment_id=submission.assignment_id,
+                subject=payload.subject,
+                question_type=payload.question_type,
+                image_url=page.get("image_url") or "",
+                image_name=page.get("image_name") or page.get("filename") or "",
+            )
+            result = ocr_service.recognize(temp_submission, assignment)
+            page_results.append(
+                {
+                    "page_index": page.get("page_index"),
+                    "image_url": page.get("image_url"),
+                    "filename": page.get("filename") or (page.get("image_url") or "").rsplit("/", 1)[-1],
+                    "ocr_text": result.raw_text,
+                    "confidence": result.confidence,
+                    "engine": result.engine,
+                    "warnings": result.warnings or [],
+                    "blocks": result.blocks,
+                }
+            )
+
+    merged = merge_ocr_pages(page_results, payload.subject, payload.question_type)
+    ocr_payload = {
+        "batch_id": payload.batch_id,
+        "subject": payload.subject,
+        "question_type": payload.question_type,
+        **merged,
+    }
+    submission.pages = _merge_page_metadata(ordered_pages, page_results)
+    submission.ocr_text = json_dumps_utf8(ocr_payload)
+    submission.ocr_engine = "BatchOCR"
+    submission.ocr_confidence = _average_confidence(page_results)
+    submission.ocr_warnings = [warning for page in page_results for warning in page.get("warnings", [])]
+    db.commit()
+    db.refresh(submission)
+    return {
+        "data": {
+            "submission_id": submission.id,
+            "batch_id": payload.batch_id,
+            **ocr_payload,
+            "submission": _submission_to_dict(submission),
+        }
+    }
+
+
 @app.post("/api/grade")
 def run_grade(payload: GradeRequest, db: Session = Depends(get_db)) -> dict:
     submission = _get_submission(db, payload.submission_id)
@@ -297,17 +422,66 @@ def run_grade(payload: GradeRequest, db: Session = Depends(get_db)) -> dict:
 
     subject = payload.subject or submission.subject
     question_type = payload.question_type or submission.question_type
+    essay_prompt = (payload.essay_prompt if payload.essay_prompt is not None else submission.essay_prompt) or ""
+    if payload.essay_prompt is not None:
+        submission.essay_prompt = essay_prompt.strip()
     grading = grading_service.grade(
         subject,
         question_type,
         ocr_text,
         submission.assignment,
         image_path=_submission_image_path(submission),
+        essay_prompt=essay_prompt,
     )
 
     submission.ai_score = grading["score"]
     submission.status = "AI 已批改"
     submission.ocr_text = ocr_text
+
+    existing = submission.grading_result
+    if existing:
+        _fill_grading_result(existing, grading)
+    else:
+        db.add(GradingResult(submission_id=submission.id, **_grading_payload(grading)))
+
+    db.commit()
+    db.refresh(submission)
+    return {"data": {"submission": _submission_to_dict(submission), "grading_result": _grading_to_dict(submission.grading_result)}}
+
+
+@app.post("/api/grade/batch")
+def run_grade_batch(payload: BatchGradeRequest, db: Session = Depends(get_db)) -> dict:
+    submission = _get_batch_submission(db, payload.batch_id, payload.submission_id)
+    subject = payload.subject or submission.subject
+    question_type = payload.question_type or submission.question_type
+    essay_prompt = (payload.essay_prompt or submission.essay_prompt or "").strip()
+    if essay_prompt:
+        submission.essay_prompt = essay_prompt
+
+    merged_payload = {
+        "batch_id": payload.batch_id,
+        "subject": subject,
+        "question_type": question_type,
+        "page_results": payload.page_results,
+        "merged_ocr_text": payload.merged_ocr_text,
+        "questions": payload.questions,
+        "essay_prompt": essay_prompt,
+    }
+    ocr_text = json_dumps_utf8(merged_payload)
+    grading = grading_service.grade_batch(
+        subject=subject,
+        question_type=question_type,
+        merged_ocr_text=payload.merged_ocr_text,
+        questions=payload.questions,
+        assignment=submission.assignment,
+        page_results=payload.page_results,
+        essay_prompt=essay_prompt,
+    )
+
+    submission.ai_score = grading["score"]
+    submission.status = "AI 已批改"
+    submission.ocr_text = ocr_text
+    submission.ocr_engine = submission.ocr_engine or "BatchOCR"
 
     existing = submission.grading_result
     if existing:
@@ -436,6 +610,208 @@ def export_class_analysis(class_name: str, db: Session = Depends(get_db)) -> str
 """
 
 
+def merge_ocr_pages(page_results: list[dict], subject: str, question_type: str) -> dict:
+    ordered = sorted(page_results, key=lambda page: int(page.get("page_index") or 0))
+    merged_ocr_text = "\n\n".join(
+        f"【第{page.get('page_index')}页】\n{page.get('ocr_text', '').strip()}"
+        for page in ordered
+        if page.get("ocr_text")
+    )
+
+    structured_questions = _questions_from_structured_pages(ordered)
+    if structured_questions:
+        questions = structured_questions
+    else:
+        questions = _merge_numbered_blocks(ordered)
+
+    warnings = [question.get("merge_warning") for question in questions if question.get("merge_warning")]
+    return {
+        "page_results": ordered,
+        "merged_ocr_text": merged_ocr_text,
+        "questions": questions,
+        "merge_summary": {
+            "page_count": len(ordered),
+            "question_count": len(questions),
+            "merged": bool(questions),
+            "warnings": warnings,
+        },
+    }
+
+
+def _questions_from_structured_pages(page_results: list[dict]) -> list[dict]:
+    for page in page_results:
+        structured = page.get("structured")
+        questions = structured.get("questions") if isinstance(structured, dict) else None
+        if isinstance(questions, list) and questions:
+            return [
+                {
+                    "question_no": item.get("question_no"),
+                    "question_text": item.get("question_text", ""),
+                    "student_answer": item.get("student_answer", ""),
+                    "source_pages": item.get("source_pages") or [page.get("page_index")],
+                    "confidence": item.get("confidence", page.get("confidence", 0.85)),
+                    "merge_warning": item.get("merge_warning", ""),
+                }
+                for item in questions
+                if isinstance(item, dict)
+            ]
+    return []
+
+
+def _merge_numbered_blocks(page_results: list[dict]) -> list[dict]:
+    bucket: dict[str, dict] = {}
+    for page in page_results:
+        page_index = int(page.get("page_index") or 0)
+        blocks = _extract_numbered_blocks(page.get("ocr_text") or "")
+        for number, body in blocks:
+            item = bucket.setdefault(number, {"question_no": number, "question_candidates": [], "answer_candidates": [], "source_pages": []})
+            item["source_pages"].append(page_index)
+            question_text, answer_text = _split_question_and_answer(body)
+            if question_text:
+                item["question_candidates"].append({"text": question_text, "page": page_index})
+            if answer_text:
+                item["answer_candidates"].append({"text": answer_text, "page": page_index})
+
+    questions: list[dict] = []
+    for number in sorted(bucket, key=lambda value: int(value) if str(value).isdigit() else 999):
+        item = bucket[number]
+        question_text = _pick_question_text(item["question_candidates"])
+        answer_text = _pick_answer_text(item["answer_candidates"])
+        confidence = 0.86 if question_text and answer_text else 0.42
+        warning = "" if question_text and answer_text else "题号匹配不完整，建议教师复核"
+        questions.append(
+            {
+                "question_no": int(number) if str(number).isdigit() else number,
+                "question_text": question_text,
+                "student_answer": answer_text,
+                "source_pages": sorted(set(item["source_pages"])),
+                "confidence": confidence,
+                "merge_warning": warning,
+            }
+        )
+    return questions
+
+
+def _extract_numbered_blocks(text: str) -> list[tuple[str, str]]:
+    matches = list(re.finditer(r"(?m)^\s*(?:第\s*)?(\d+)\s*(?:[\.、．]|题[:：]?)\s*", text))
+    if not matches:
+        return []
+    blocks: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        if body:
+            blocks.append((match.group(1), body))
+    return blocks
+
+
+def _split_question_and_answer(body: str) -> tuple[str, str]:
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if not lines:
+        return "", ""
+    first = lines[0]
+    rest = "\n".join(lines[1:]).strip()
+    if _looks_like_question(first):
+        return first, rest
+    if rest and _looks_like_question(body):
+        return first, rest
+    return "", "\n".join(lines)
+
+
+def _looks_like_question(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(计算|解方程|应用题|求|多少钱|作文|写作|阅读|简答|Write|passage|essay|[？?])",
+            text,
+            flags=re.I,
+        )
+    )
+
+
+def _pick_question_text(candidates: list[dict]) -> str:
+    if not candidates:
+        return ""
+    candidates = sorted(candidates, key=lambda item: (0 if _looks_like_question(item["text"]) else 1, len(item["text"])))
+    return candidates[0]["text"]
+
+
+def _pick_answer_text(candidates: list[dict]) -> str:
+    if not candidates:
+        return ""
+    return "\n".join(item["text"] for item in sorted(candidates, key=lambda item: item.get("page") or 0) if item.get("text")).strip()
+
+
+def _demo_batch_page_results(pages: list[dict]) -> list[dict]:
+    paper = demo_math_paper_ocr_data()
+    questions = paper["questions"]
+    question_lines = [paper["paper_title"]]
+    answer_lines = ["学生答题过程"]
+    for question in questions:
+        question_lines.append(f"{question['question_no']}. {question['question_text']}")
+        answer_lines.append(f"{question['question_no']}. " + "\n".join(question["student_answer"]))
+
+    page_texts = [("\n".join(question_lines), 0.99), ("\n\n".join(answer_lines), 0.99)]
+    results: list[dict] = []
+    for index, page in enumerate(pages):
+        text, confidence = page_texts[index] if index < len(page_texts) else ("", 0.5)
+        results.append(
+            {
+                "page_index": page.get("page_index") or index + 1,
+                "image_url": page.get("image_url"),
+                "filename": page.get("filename") or (page.get("image_url") or "").rsplit("/", 1)[-1],
+                "ocr_text": text,
+                "confidence": confidence,
+                "engine": "DemoBatchMathPaperOCR",
+                "warnings": ["比赛稳定演示模式：已按多图顺序返回题目页和答题页 OCR。"],
+                "blocks": [],
+            }
+        )
+    return results
+
+
+def _merge_page_metadata(pages: list[dict], page_results: list[dict]) -> list[dict]:
+    result_by_index = {int(item.get("page_index") or 0): item for item in page_results}
+    merged: list[dict] = []
+    for page in pages:
+        index = int(page.get("page_index") or 0)
+        result = result_by_index.get(index, {})
+        merged.append(
+            {
+                **page,
+                "ocr_engine": result.get("engine"),
+                "ocr_confidence": result.get("confidence"),
+                "ocr_text": result.get("ocr_text", ""),
+                "warnings": result.get("warnings", []),
+            }
+        )
+    return merged
+
+
+def _average_confidence(page_results: list[dict]) -> float:
+    values = [float(item.get("confidence") or 0) for item in page_results]
+    return round(sum(values) / len(values), 3) if values else 0
+
+
+def _is_answer_sheet_mode(subject: str, question_type: str, assignment: Assignment) -> bool:
+    return (
+        subject in {"自动识别", "综合"}
+        or question_type in {"答题卡", "整张答题卡", "自动识别"}
+        or assignment.subject in {"自动识别", "综合"}
+        or assignment.question_type in {"答题卡", "整张答题卡"}
+    )
+
+
+def json_dumps_utf8(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _pydantic_dict(model) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
 def _resolve_assignment(db: Session, payload: UploadRequest) -> Assignment:
     if payload.assignment_id:
         assignment = db.get(Assignment, payload.assignment_id)
@@ -461,6 +837,16 @@ def _get_submission(db: Session, submission_id: int) -> Submission:
     submission = db.get(Submission, submission_id)
     if not submission:
         raise HTTPException(status_code=404, detail="提交记录不存在")
+    return submission
+
+
+def _get_batch_submission(db: Session, batch_id: str, submission_id: int | None = None) -> Submission:
+    if submission_id:
+        submission = db.get(Submission, submission_id)
+    else:
+        submission = db.query(Submission).filter(Submission.batch_id == batch_id).first()
+    if not submission or submission.batch_id != batch_id:
+        raise HTTPException(status_code=404, detail="批量提交记录不存在")
     return submission
 
 
@@ -626,6 +1012,9 @@ def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
         "question_type": submission.question_type,
         "image_url": submission.image_url,
         "image_name": submission.image_name,
+        "batch_id": submission.batch_id,
+        "pages": submission.pages or [],
+        "essay_prompt": submission.essay_prompt or "",
         "ocr_text": submission.ocr_text,
         "ocr_engine": submission.ocr_engine,
         "ocr_confidence": submission.ocr_confidence,

@@ -10,6 +10,49 @@ class UploadRequest(BaseModel):
     assignment_id: Optional[int] = None
     image_name: str = ""
     image_data: str = Field("", description="Data URL or base64 encoded image content.")
+    essay_prompt: str = ""
+
+
+class BatchImageItem(BaseModel):
+    page_index: int
+    image_name: str = ""
+    image_data: str = Field("", description="Data URL or base64 encoded image content.")
+
+
+class BatchUploadRequest(BaseModel):
+    student_id: int
+    subject: str
+    question_type: str
+    assignment_id: Optional[int] = None
+    essay_prompt: str = ""
+    images: list[BatchImageItem]
+
+
+class BatchPageRequest(BaseModel):
+    page_index: int
+    image_url: str
+    filename: str = ""
+    image_name: str = ""
+
+
+class BatchOCRRequest(BaseModel):
+    batch_id: str
+    submission_id: Optional[int] = None
+    subject: str
+    question_type: str
+    pages: list[BatchPageRequest]
+
+
+class BatchGradeRequest(BaseModel):
+    batch_id: str
+    submission_id: Optional[int] = None
+    student_id: Optional[int] = None
+    subject: str
+    question_type: str
+    merged_ocr_text: str = ""
+    questions: list[dict] = Field(default_factory=list)
+    page_results: list[dict] = Field(default_factory=list)
+    essay_prompt: str = ""
 
 
 class AssignmentCreateRequest(BaseModel):
@@ -57,6 +100,7 @@ class GradeRequest(BaseModel):
     subject: Optional[str] = None
     question_type: Optional[str] = None
     ocr_text: Optional[str] = None
+    essay_prompt: Optional[str] = None
 
 
 class ReviewRequest(BaseModel):

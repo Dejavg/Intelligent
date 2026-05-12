@@ -21,6 +21,7 @@ class GradingService:
         ocr_text: str,
         assignment: Assignment,
         image_path: Path | None = None,
+        essay_prompt: str = "",
     ) -> dict:
         if self._is_answer_sheet(subject, question_type, assignment):
             return self._grade_answer_sheet(ocr_text, assignment, image_path)
@@ -28,28 +29,78 @@ class GradingService:
         if not ocr_text.strip() and not (settings.llm_enabled and settings.llm_grade_from_image and image_path):
             return self._empty_result(subject, assignment)
 
-        rule_result = self._grade_by_rule(subject, question_type, ocr_text, assignment)
+        rule_result = self._grade_by_rule(subject, question_type, ocr_text, assignment, essay_prompt=essay_prompt)
         rule_result.setdefault("ai_engine", "RuleEngine")
+        if essay_prompt:
+            rule_result.setdefault("ai_metadata", {})
+            rule_result["ai_metadata"]["essay_prompt"] = essay_prompt
         if settings.llm_enabled:
             try:
                 if image_path and settings.llm_grade_from_image and self.llm_client.vision_available:
-                    llm_result = self.llm_client.grade_image(image_path, subject, question_type, ocr_text, assignment)
+                    llm_result = self.llm_client.grade_image(image_path, subject, question_type, ocr_text, assignment, essay_prompt=essay_prompt)
                 else:
-                    llm_result = self.llm_client.grade(subject, question_type, ocr_text, assignment)
+                    llm_result = self.llm_client.grade(subject, question_type, ocr_text, assignment, essay_prompt=essay_prompt)
                 llm_grading = normalize_llm_grading(llm_result.data, rule_result, subject)
                 llm_grading["ai_engine"] = f"LLM:{llm_result.provider}:{llm_result.model}"
                 llm_grading["ai_metadata"] = {
                     **(llm_grading.get("ai_metadata") or {}),
                     "llm_provider": llm_result.provider,
                     "llm_model": llm_result.model,
+                    "essay_prompt": essay_prompt,
                 }
                 return llm_grading
             except Exception as exc:
                 if not settings.llm_fallback_to_rule:
                     raise
                 rule_result["ai_engine_note"] = f"LLM fallback: {exc}"
-                rule_result["ai_metadata"] = {"llm_fallback_reason": str(exc)}
+                rule_result["ai_metadata"] = {**(rule_result.get("ai_metadata") or {}), "llm_fallback_reason": str(exc)}
         return rule_result
+
+    def grade_batch(
+        self,
+        subject: str,
+        question_type: str,
+        merged_ocr_text: str,
+        questions: list[dict],
+        assignment: Assignment,
+        page_results: list[dict] | None = None,
+        essay_prompt: str = "",
+    ) -> dict:
+        if self._is_composition(subject, question_type):
+            body = _composition_body_from_batch(merged_ocr_text, questions)
+            return self.grade(subject, question_type, body, assignment, essay_prompt=essay_prompt)
+
+        if _is_fixed_demo_questions(questions):
+            paper = {"subject": "数学", "paper_title": "数学练习卷", "demo_fixed": True, "questions": questions}
+            result = _grade_demo_math_paper(paper)
+            result["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
+            return result
+
+        answer_sheet_text = _questions_to_answer_sheet_text(questions, merged_ocr_text)
+        errors: list[str] = []
+        if settings.llm_enabled and self.llm_client.available:
+            try:
+                llm_result = self.llm_client.grade_merged_answer_sheet(
+                    page_results=page_results or [],
+                    merged_ocr_text=merged_ocr_text,
+                    questions=questions,
+                    assignment=assignment,
+                    subject=subject,
+                    question_type=question_type,
+                )
+                result = normalize_answer_sheet_grading(llm_result.data, llm_result.provider, llm_result.model)
+                result["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
+                return result
+            except Exception as exc:
+                errors.append(f"多图合并文本批改失败：{exc}")
+
+        fallback = self._grade_answer_sheet_from_text(answer_sheet_text, assignment, errors or ["已根据多图 OCR 合并文本启用本地规则批改。"])
+        if fallback:
+            fallback["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
+            return fallback
+        result = self._grading_failed_result(assignment, answer_sheet_text, errors or ["多图合并后未能形成可靠批改结果"])
+        result["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
+        return result
 
     def _grade_answer_sheet(self, ocr_text: str, assignment: Assignment, image_path: Path | None) -> dict:
         if not image_path and not ocr_text.strip():
@@ -178,12 +229,15 @@ class GradingService:
 
         return None
 
-    def _grade_by_rule(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment) -> dict:
+    def _grade_by_rule(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment, essay_prompt: str = "") -> dict:
         if subject == "数学":
             return self._grade_math(ocr_text, assignment)
         if subject == "英语":
-            return self._grade_english(ocr_text, assignment)
-        return self._grade_chinese(ocr_text, assignment)
+            return self._grade_english(ocr_text, assignment, essay_prompt=essay_prompt)
+        return self._grade_chinese(ocr_text, assignment, essay_prompt=essay_prompt)
+
+    def _is_composition(self, subject: str, question_type: str) -> bool:
+        return subject in {"语文", "英语"} and any(token in question_type.lower() for token in ["作文", "主观", "essay"])
 
     def _is_answer_sheet(self, subject: str, question_type: str, assignment: Assignment) -> bool:
         return (
@@ -257,7 +311,7 @@ class GradingService:
             "suggestion": suggestion,
         }
 
-    def _grade_english(self, text: str, assignment: Assignment) -> dict:
+    def _grade_english(self, text: str, assignment: Assignment, essay_prompt: str = "") -> dict:
         lower = text.lower()
         full_score = assignment.full_score
         errors: list[dict] = []
@@ -352,9 +406,17 @@ class GradingService:
             "revised_example": "I went to the park with my friend last weekend. We played football together. I was very happy.",
             "comment": comment,
             "suggestion": suggestion,
+            "ai_metadata": {
+                "essay_prompt": essay_prompt,
+                "topic_relevance": (
+                    "作文内容基本围绕写作要求展开。"
+                    if essay_prompt
+                    else "未填写作文题目，AI 主要根据作文正文进行评价，切题判断可能不完整。"
+                ),
+            },
         }
 
-    def _grade_chinese(self, text: str, assignment: Assignment) -> dict:
+    def _grade_chinese(self, text: str, assignment: Assignment, essay_prompt: str = "") -> dict:
         full_score = assignment.full_score
         length = len(text.strip())
         content = 5 if length >= 30 else 3
@@ -390,6 +452,14 @@ class GradingService:
             "revised_example": "这次校园运动会最让我难忘的是接力赛最后一棒。同学们一边加油一边提醒节奏，让我感受到集体合作的力量。",
             "comment": "你的回答能围绕校园活动表达真实感受，整体比较清楚。若能补充一个更具体的动作或场景，原因说明会更有说服力。",
             "suggestion": "练习用“事件 + 细节 + 感受 + 原因”的四步法回答简答题。",
+            "ai_metadata": {
+                "essay_prompt": essay_prompt,
+                "topic_relevance": (
+                    "内容基本切合题目要求，能够围绕主题展开。"
+                    if essay_prompt
+                    else "未填写作文题目，AI 主要根据作文正文进行评价，切题判断可能不完整。"
+                ),
+            },
         }
 
     def _empty_result(self, subject: str, assignment: Assignment) -> dict:
@@ -453,6 +523,77 @@ class GradingService:
         }
 
 
+def _is_fixed_demo_questions(questions: list[dict]) -> bool:
+    if len(questions) != 5:
+        return False
+    joined = "\n".join(
+        f"{item.get('question_text', '')}\n{item.get('student_answer', '')}"
+        for item in questions
+        if isinstance(item, dict)
+    )
+    required = ["36", "2x + 3", "15", "90", "3x - 5", "小明", "11"]
+    return all(token in joined for token in required)
+
+
+def _questions_to_answer_sheet_text(questions: list[dict], fallback_text: str = "") -> str:
+    if not questions:
+        return fallback_text
+    lines: list[str] = []
+    for index, question in enumerate(questions, start=1):
+        no = question.get("question_no") or index
+        question_text = str(question.get("question_text") or "").strip()
+        answer = question.get("student_answer") or ""
+        if isinstance(answer, list):
+            answer_text = "\n".join(str(item) for item in answer)
+        else:
+            answer_text = str(answer)
+        lines.append(f"{no}. {question_text}\n{answer_text}".strip())
+    return "\n\n".join(lines)
+
+
+def _composition_body_from_batch(merged_ocr_text: str, questions: list[dict]) -> str:
+    if questions:
+        parts = []
+        for question in questions:
+            answer = question.get("student_answer") or question.get("question_text") or ""
+            if isinstance(answer, list):
+                parts.extend(str(item) for item in answer)
+            else:
+                parts.append(str(answer))
+        body = "\n".join(part for part in parts if part.strip()).strip()
+        if body:
+            return body
+    return merged_ocr_text
+
+
+def _batch_merge_metadata(page_results: list[dict], questions: list[dict]) -> dict:
+    return {
+        "page_count": len(page_results),
+        "question_count": len(questions),
+        "page_results": [
+            {
+                "page_index": item.get("page_index"),
+                "image_url": item.get("image_url"),
+                "engine": item.get("engine"),
+                "confidence": item.get("confidence"),
+                "ocr_text": item.get("ocr_text", ""),
+                "warnings": item.get("warnings", []),
+            }
+            for item in page_results
+        ],
+        "questions": [
+            {
+                "question_no": item.get("question_no"),
+                "source_pages": item.get("source_pages", []),
+                "confidence": item.get("confidence"),
+                "merge_warning": item.get("merge_warning", ""),
+            }
+            for item in questions
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text).replace("，", ",").replace("。", ".")
 
@@ -478,6 +619,8 @@ def _parse_structured_math_paper(text: str) -> dict | None:
         return None
     questions = data.get("questions")
     if data.get("subject") != "数学" or not isinstance(questions, list):
+        return None
+    if not data.get("demo_fixed"):
         return None
     question_numbers = {str(item.get("question_no")) for item in questions if isinstance(item, dict)}
     if {"1", "2", "3", "4", "5"}.issubset(question_numbers):

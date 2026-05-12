@@ -46,7 +46,7 @@ class LLMClient:
     def vision_available(self) -> bool:
         return bool(settings.llm_enabled and settings.llm_vision_enabled and self.base_url and self.vision_model and self.api_key)
 
-    def grade(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment) -> LLMResult:
+    def grade(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment, essay_prompt: str = "") -> LLMResult:
         if not self.available:
             raise RuntimeError("LLM is not configured")
 
@@ -58,7 +58,14 @@ class LLMClient:
             "standard_answer": assignment.standard_answer,
             "full_score": assignment.full_score,
             "knowledge_points": assignment.knowledge_points or [],
+            "essay_prompt": essay_prompt,
+            "writing_requirement": essay_prompt,
             "student_answer": ocr_text,
+            "student_composition": ocr_text if subject in {"语文", "英语"} else "",
+            "composition_instruction": (
+                "如果是语文/英语作文，请同时依据作文题目/写作要求和学生作文正文判断是否切题、内容完整度、结构、语言表达、错别字/语法/拼写，并输出 topic_relevance。"
+                if subject in {"语文", "英语"} else ""
+            ),
             "output_rule": "只输出一个合法 JSON 对象，不要输出 Markdown 代码块。",
         }
         payload = {
@@ -124,6 +131,7 @@ class LLMClient:
         question_type: str,
         ocr_text: str,
         assignment: Assignment,
+        essay_prompt: str = "",
     ) -> LLMResult:
         if not self.vision_available:
             raise RuntimeError("vision LLM is not configured")
@@ -136,7 +144,10 @@ class LLMClient:
             "standard_answer": assignment.standard_answer,
             "full_score": assignment.full_score,
             "knowledge_points": assignment.knowledge_points or [],
+            "essay_prompt": essay_prompt,
+            "writing_requirement": essay_prompt,
             "ocr_text": ocr_text,
+            "student_composition": ocr_text if subject in {"语文", "英语"} else "",
             "output_rule": "只输出合法 JSON 对象；必须给出非模板化评语、错因、薄弱点和学习建议。",
         }
         payload = {
@@ -161,6 +172,84 @@ class LLMClient:
             provider=self.provider,
             model=_resolve_vision_model(self.provider, self.vision_model),
         )
+
+    def grade_merged_answer_sheet(
+        self,
+        page_results: list[dict],
+        merged_ocr_text: str,
+        questions: list[dict],
+        assignment: Assignment,
+        subject: str,
+        question_type: str,
+    ) -> LLMResult:
+        if not self.available:
+            raise RuntimeError("LLM is not configured")
+        user_prompt = {
+            "task": (
+                "下面是一份由多张图片 OCR 后合并得到的学生作业。图片按页码顺序上传，题目和学生答案可能来自不同页面。"
+                "请根据题号将题目和学生作答对应起来，进行逐题批改。不要只判断最终答案，要分析解题过程并给过程分。"
+            ),
+            "subject": subject,
+            "question_type": question_type,
+            "page_results": page_results,
+            "merged_ocr_text": merged_ocr_text,
+            "questions": questions,
+            "assignment_reference": {
+                "title": assignment.title,
+                "full_score": assignment.full_score,
+                "knowledge_points": assignment.knowledge_points or [],
+            },
+            "requirements": [
+                "逐题识别题型、完整题干和学生作答。",
+                "数学题必须分析思路、关键步骤、中间计算和最终答案。",
+                "题目页和答题页分开时，需要依据题号合并，不要把题干误判为学生答案。",
+                "如果合并置信度较低，请在 warnings 或题目 merge_warning 中说明。",
+            ],
+            "output_schema": {
+                "score": "整份作业总得分，数字",
+                "full_score": "整份作业总满分，数字",
+                "is_correct": "是否全对，布尔值",
+                "summary": "整体分析",
+                "comment": "整体个性化评语",
+                "suggestion": "整体学习建议",
+                "common_weak_points": ["高频薄弱点"],
+                "warnings": ["识别或合并不确定说明"],
+                "questions": [
+                    {
+                        "question_no": "题号",
+                        "subject": "学科",
+                        "question_type": "题型",
+                        "question_text": "题干",
+                        "student_answer": "学生作答",
+                        "score": "本题得分",
+                        "full_score": "本题满分",
+                        "is_correct": "是否正确",
+                        "process_analysis": "过程分析",
+                        "mistakes": [{"step": "错误步骤", "error": "错误原因"}],
+                        "knowledge_points": ["知识点"],
+                        "weak_points": ["薄弱点"],
+                        "correct_solution": "正确解法",
+                        "comment": "本题评语",
+                        "suggestion": "本题建议",
+                    }
+                ],
+            },
+            "output_rule": "只输出一个合法 JSON 对象，不要输出 Markdown 代码块。",
+        }
+        payload = {
+            "model": self.model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是一名严谨的多学科阅卷老师，擅长处理多页试卷 OCR 合并后的逐题批改。输出必须是可解析 JSON。",
+                },
+                {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
+            ],
+        }
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
+        content = data["choices"][0]["message"]["content"]
+        return LLMResult(data=_extract_json(content), raw_text=content, provider=self.provider, model=self.model)
 
     def grade_answer_sheet(self, image_path: Path, ocr_text: str, assignment: Assignment) -> LLMResult:
         if not self.vision_available:
@@ -368,7 +457,11 @@ def normalize_llm_grading(raw: dict[str, Any], rule_result: dict[str, Any], subj
 
     result["dimension_scores"] = raw.get("dimension_scores") if isinstance(raw.get("dimension_scores"), dict) else result.get("dimension_scores", {})
     result["ai_engine"] = f"LLM:{settings.llm_provider}"
-    result["ai_metadata"] = {"llm_provider": settings.llm_provider}
+    result["ai_metadata"] = {
+        **(result.get("ai_metadata") or {}),
+        "llm_provider": settings.llm_provider,
+        "topic_relevance": raw.get("topic_relevance") or (result.get("ai_metadata") or {}).get("topic_relevance"),
+    }
     return result
 
 

@@ -865,6 +865,60 @@ textarea {
   opacity: 0;
 }
 
+.upload-drop.has-files {
+  display: block;
+  min-height: auto;
+}
+
+.upload-drop.has-files input {
+  display: none;
+}
+
+.multi-upload-list,
+.paper-page-list,
+.page-ocr-list,
+.merge-question-map,
+.teacher-composition-card {
+  display: grid;
+  gap: 12px;
+}
+
+.upload-page-card,
+.paper-page-card,
+.merge-question-map > div,
+.teacher-composition-card .compact-card {
+  padding: 14px;
+  background: #f8fbff;
+  border: 1px solid #dce8fb;
+  border-radius: 16px;
+}
+
+.upload-page-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.upload-page-head strong {
+  color: var(--primary-strong);
+}
+
+.page-thumb {
+  width: 100%;
+  max-height: 180px;
+}
+
+.upload-again {
+  justify-self: start;
+}
+
+.danger-text {
+  color: var(--red);
+}
+
 .upload-empty {
   display: grid;
   gap: 10px;
@@ -1019,6 +1073,10 @@ textarea {
 
 .result-page-grid {
   align-items: start;
+}
+
+.paper-page-card .paper-preview {
+  max-height: 420px;
 }
 
 /* ========== Result ========== */
@@ -1237,6 +1295,21 @@ textarea {
 .ocr-paper {
   display: grid;
   gap: 12px;
+}
+
+.merge-summary-card,
+.composition-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  background: #f8fbff;
+  border: 1px solid #dce8fb;
+  border-radius: var(--radius);
+}
+
+.small-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .section-head.compact {

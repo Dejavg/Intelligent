@@ -499,6 +499,7 @@ def demo_math_paper_ocr_data() -> dict[str, Any]:
     return {
         "subject": "数学",
         "paper_title": "数学练习卷",
+        "demo_fixed": True,
         "questions": [
             {
                 "question_no": 1,
