@@ -203,7 +203,7 @@ function modeBanner() {
   const runtime = state.runtime || {};
   const stable = Boolean(runtime.demo_fixed_math_paper_ocr);
   const safety = runtimeSafety(runtime);
-  const title = stable ? "当前模式：比赛稳定演示模式" : "当前模式：真实识别模式";
+  const title = stable ? "当前模式：演示模式" : "当前模式：真实识别模式";
   const description = stable
     ? "上传数学练习卷后，系统将使用固定 5 题结构化 OCR，保证比赛现场演示稳定。"
     : "系统将调用 LLM 视觉 OCR / PaddleOCR / 云 OCR 识别真实图片，适合第二阶段泛化验证。";
@@ -2400,7 +2400,7 @@ function ocrTestPanel() {
   const runtime = state.runtime || {};
   const stable = Boolean(runtime.demo_fixed_math_paper_ocr);
   const warning = stable
-    ? "当前为比赛稳定演示模式。学生端答题卡会优先走固定 Demo OCR；本测试区用于隔离验证真实 OCR，不影响比赛演示流程。"
+    ? "当前为演示模式。学生端答题卡会优先走固定 Demo OCR；本测试区用于隔离验证真实 OCR，不影响比赛演示流程。"
     : "当前为真实 OCR 模式。若识别失败，请先检查 OCR_PROVIDER、模型配置、图片大小和 API Key。";
   const keyWarning = runtime.ocr_provider === "llm" && !runtime.llm_has_key
     ? `<div class="ocr-test-warning bad">当前 OCR_PROVIDER=llm 但未检测到 API Key，请填写 KIMI_API_KEY 或切回演示模式。</div>`
