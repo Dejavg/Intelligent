@@ -394,7 +394,7 @@ class LLMClient:
                 {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
             ],
         }
-        data = self._post_chat_completions(payload, timeout=max(self.timeout, 180))
+        data = self._post_chat_completions(payload, timeout=max(self.timeout, 400))
         content = data["choices"][0]["message"]["content"]
         return LLMResult(
             data=_extract_json(content),
