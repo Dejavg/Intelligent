@@ -264,6 +264,37 @@ x=4
         self.assertEqual(questions[3]["score"], 7)
         self.assertEqual(questions[3]["status"], "partial")
 
+    def test_quick_demo_can_force_fixed_ocr_in_real_mode(self):
+        object.__setattr__(settings, "demo_fixed_math_paper_ocr", False)
+        assignments = self.client.get("/api/assignments").json()["data"]
+        assignment = next(item for item in assignments if item["subject"] == "自动识别")
+        upload = self.client.post(
+            "/api/upload",
+            json={
+                "student_id": 1,
+                "assignment_id": assignment["id"],
+                "subject": "自动识别",
+                "question_type": "答题卡",
+                "image_name": "pytest-demo-paper.png",
+                "image_data": VALID_1X1_PNG,
+            },
+        )
+        self.assertEqual(upload.status_code, 200)
+        submission_id = upload.json()["data"]["submission_id"]
+
+        ocr = self.client.post(
+            "/api/ocr",
+            json={"submission_id": submission_id, "force_demo_fixed_math_paper": True},
+        )
+        self.assertEqual(ocr.status_code, 200)
+        self.assertEqual(ocr.json()["data"]["ocr"]["engine"], "DemoMathPaperOCR")
+
+        grade = self.client.post("/api/grade", json={"submission_id": submission_id})
+        self.assertEqual(grade.status_code, 200)
+        result = grade.json()["data"]["grading_result"]
+        self.assertEqual(result["ai_engine"], "DemoRule:FixedMathPaper")
+        self.assertEqual(result["score"], 43)
+
     def test_batch_upload_ocr_and_grade_flow(self):
         assignments = self.client.get("/api/assignments").json()["data"]
         assignment = next(item for item in assignments if item["subject"] == "自动识别")

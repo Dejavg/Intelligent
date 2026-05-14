@@ -690,10 +690,10 @@ async function runQuickDemo(source = "home") {
     });
 
     const submissionId = upload.data.submission_id;
-    setQuickDemoStage("正在进行 OCR 识别", 3);
+    setQuickDemoStage("正在加载固定 5 题识别结果", 3);
     await api("/api/ocr", {
       method: "POST",
-      body: JSON.stringify({ submission_id: submissionId }),
+      body: JSON.stringify({ submission_id: submissionId, force_demo_fixed_math_paper: true }),
     });
 
     setQuickDemoStage("正在进行 AI 逐题批改", 4);

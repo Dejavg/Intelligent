@@ -97,6 +97,7 @@ class AnnotationRequest(BaseModel):
 
 class OCRRequest(BaseModel):
     submission_id: int
+    force_demo_fixed_math_paper: bool = False
 
 
 class GradeRequest(BaseModel):

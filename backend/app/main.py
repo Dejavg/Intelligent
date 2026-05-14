@@ -351,7 +351,10 @@ def bulk_upload(
 @app.post("/api/ocr")
 def run_ocr(payload: OCRRequest, db: Session = Depends(get_db)) -> dict:
     submission = _get_submission(db, payload.submission_id)
-    result = ocr_service.recognize(submission, submission.assignment)
+    if payload.force_demo_fixed_math_paper:
+        result = ocr_service.recognize_demo_math_paper()
+    else:
+        result = ocr_service.recognize(submission, submission.assignment)
     submission.ocr_text = result.raw_text
     submission.ocr_engine = result.engine
     submission.ocr_confidence = result.confidence

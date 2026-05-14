@@ -88,6 +88,9 @@ class OCRService:
         result.warnings = [*(result.warnings or []), *warnings]
         return result
 
+    def recognize_demo_math_paper(self) -> OCRResult:
+        return self._demo_math_paper_recognize()
+
     def _unavailable_result(self, submission: Submission, exc: Exception) -> OCRResult:
         if isinstance(exc, LLMHTTPError) and exc.status_code == 401:
             message = (
