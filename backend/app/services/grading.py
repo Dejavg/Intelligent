@@ -34,6 +34,8 @@ class GradingService:
         if essay_prompt:
             rule_result.setdefault("ai_metadata", {})
             rule_result["ai_metadata"]["essay_prompt"] = essay_prompt
+        if (rule_result.get("ai_metadata") or {}).get("objective_grading"):
+            return rule_result
         if settings.llm_enabled:
             try:
                 if image_path and settings.llm_grade_from_image and self.llm_client.vision_available:
@@ -230,6 +232,8 @@ class GradingService:
         return None
 
     def _grade_by_rule(self, subject: str, question_type: str, ocr_text: str, assignment: Assignment, essay_prompt: str = "") -> dict:
+        if _is_objective_question(question_type, assignment):
+            return _grade_objective_question(ocr_text, assignment)
         if subject == "数学":
             return self._grade_math(ocr_text, assignment)
         if subject == "英语":
@@ -602,6 +606,8 @@ def _batch_merge_metadata(page_results: list[dict], questions: list[dict]) -> di
                 "image_url": item.get("image_url"),
                 "engine": item.get("engine"),
                 "confidence": item.get("confidence"),
+                "page_type": item.get("page_type"),
+                "layout_summary": item.get("layout_summary"),
                 "ocr_text": item.get("ocr_text", ""),
                 "warnings": item.get("warnings", []),
             }
@@ -614,11 +620,133 @@ def _batch_merge_metadata(page_results: list[dict], questions: list[dict]) -> di
                 "confidence": item.get("confidence"),
                 "merge_status": item.get("merge_status", ""),
                 "merge_warning": item.get("merge_warning", ""),
+                "matching_reason": item.get("matching_reason", ""),
+                "page_roles": item.get("page_roles", []),
             }
             for item in questions
             if isinstance(item, dict)
         ],
     }
+
+
+def _is_objective_question(question_type: str, assignment: Assignment) -> bool:
+    text = f"{question_type} {assignment.question_type} {assignment.title}".lower()
+    return any(token in text for token in ["选择", "单选", "多选", "判断", "填空", "客观", "choice", "blank", "fill", "true/false"])
+
+
+def _grade_objective_question(text: str, assignment: Assignment) -> dict:
+    expected_answers = _normalize_objective_answers(assignment.standard_answer or "")
+    student_answers = _extract_student_objective_answers(text, expected_answers)
+    full_score = float(assignment.full_score or 10)
+    type_text = f"{assignment.question_type or ''} {assignment.title or ''}".lower()
+    is_choice = any(token in type_text for token in ["选择", "单选", "多选", "choice"])
+    is_fill = any(token in type_text for token in ["填空", "blank", "fill"])
+    if not expected_answers:
+        expected_answers = _normalize_objective_answers(assignment.standard_answer or assignment.question)
+
+    matches = 0
+    details: list[dict] = []
+    for index, expected in enumerate(expected_answers):
+        student = student_answers[index] if index < len(student_answers) else ""
+        ok = _objective_answer_equal(student, expected, is_choice=is_choice)
+        if ok:
+            matches += 1
+        details.append(
+            {
+                "blank_no": index + 1,
+                "student_answer": student or "未识别",
+                "standard_answer": expected,
+                "is_correct": ok,
+            }
+        )
+
+    total = max(len(expected_answers), 1)
+    score = _clean_number(full_score * matches / total)
+    correct = matches == total and total > 0
+    mistakes = [] if correct else [
+        {
+            "step": "客观题答案匹配",
+            "error": f"标准答案为 {'、'.join(expected_answers) or '未配置'}，识别到的学生答案为 {'、'.join(student_answers) or '未识别'}。",
+        }
+    ]
+    weak_points = [] if correct else (["填空题答案规范"] if is_fill else ["选择题审题"])
+    question_type = "填空题" if is_fill else "选择题" if is_choice else "客观题"
+    return {
+        "score": score,
+        "full_score": full_score,
+        "is_correct": correct,
+        "process_analysis": (
+            "系统按标准答案自动匹配客观题作答，答案完全一致。"
+            if correct
+            else "系统已按标准答案进行自动匹配，存在答案不一致或漏填，需要订正。"
+        ),
+        "mistakes": mistakes,
+        "errors": mistakes,
+        "knowledge_points": assignment.knowledge_points or [question_type],
+        "weak_points": weak_points,
+        "dimension_scores": {"答案匹配": score, "满分": full_score},
+        "correct_solution": f"标准答案：{'、'.join(expected_answers) or '-'}",
+        "comment": (
+            f"{question_type}作答准确，说明你对本题考查点掌握较好。"
+            if correct
+            else f"{question_type}还需要核对题干关键词和答案格式，尤其注意是否漏选、漏填或单位不完整。"
+        ),
+        "suggestion": (
+            "继续保持先审题、再作答、最后核对答案格式的习惯。"
+            if correct
+            else "建议订正时把题干关键词圈出，再对照标准答案检查选项、单位和格式。"
+        ),
+        "ai_engine": "RuleEngine:Objective",
+        "ai_metadata": {
+            "objective_grading": True,
+            "question_type": question_type,
+            "expected_answers": expected_answers,
+            "student_answers": student_answers,
+            "match_details": details,
+        },
+    }
+
+
+def _normalize_objective_answers(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        if isinstance(parsed, dict):
+            return [str(parsed[key]).strip() for key in sorted(parsed) if str(parsed[key]).strip()]
+    except json.JSONDecodeError:
+        pass
+    text = re.sub(r"^(标准答案|答案|answer)\s*[:：]\s*", "", text, flags=re.I)
+    parts = re.split(r"[,，;；、\n]+", text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _extract_student_objective_answers(text: str, expected_answers: list[str]) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    answer_line = ""
+    for line in raw.splitlines():
+        if re.search(r"(答案|答|选|填)\s*[:：]", line, flags=re.I):
+            answer_line = line
+    source = answer_line or raw
+    source = re.sub(r"^(答案|答|选择|填空|学生答案)\s*[:：]\s*", "", source.strip(), flags=re.I)
+    choice_match = re.findall(r"\b[A-H]\b", source.upper())
+    if choice_match and all(re.fullmatch(r"[A-H]", item.upper()) for item in expected_answers):
+        return choice_match
+    parts = re.split(r"[,，;；、\n]+", source)
+    cleaned = [re.sub(r"^[\s\d\.\、:：]+", "", part).strip() for part in parts if part.strip()]
+    return cleaned[: max(len(expected_answers), 1)]
+
+
+def _objective_answer_equal(student: str, expected: str, is_choice: bool = False) -> bool:
+    if is_choice:
+        return "".join(sorted(student.upper().replace(" ", ""))) == "".join(sorted(expected.upper().replace(" ", "")))
+    normalize = lambda value: re.sub(r"\s+", "", str(value).strip().lower())
+    return normalize(student) == normalize(expected)
 
 
 def _compact(text: str) -> str:

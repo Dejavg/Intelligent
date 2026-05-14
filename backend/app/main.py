@@ -621,7 +621,7 @@ def export_class_analysis(class_name: str, db: Session = Depends(get_db)) -> str
 
 
 def merge_ocr_pages(page_results: list[dict], subject: str, question_type: str) -> dict:
-    ordered = sorted(page_results, key=lambda page: int(page.get("page_index") or 0))
+    ordered = [_annotate_page_result(page) for page in sorted(page_results, key=lambda page: int(page.get("page_index") or 0))]
     merged_ocr_text = "\n\n".join(
         f"【第{page.get('page_index')}页】\n{page.get('ocr_text', '').strip()}"
         for page in ordered
@@ -664,12 +664,57 @@ def _questions_from_structured_pages(page_results: list[dict]) -> list[dict]:
                     "confidence": item.get("confidence", page.get("confidence", 0.85)),
                     "merge_status": item.get("merge_status") or _merge_status(float(item.get("confidence", page.get("confidence", 0.85)) or 0), item.get("merge_warning", "")),
                     "merge_warning": item.get("merge_warning", ""),
+                    "matching_reason": item.get("matching_reason") or "结构化 OCR 已直接给出题干与作答对应关系。",
+                    "page_roles": item.get("page_roles") or [{"page_index": page.get("page_index"), "page_type": page.get("page_type", "混合页")}],
                 }
                 for item in questions
                 if isinstance(item, dict)
             ]
             return normalized_questions
     return []
+
+
+def _annotate_page_result(page: dict) -> dict:
+    text = str(page.get("ocr_text") or "")
+    page_type = _infer_page_type(text)
+    return {
+        **page,
+        "page_type": page.get("page_type") or page_type,
+        "layout_summary": page.get("layout_summary") or _page_layout_summary(text, page_type),
+    }
+
+
+def _infer_page_type(text: str) -> str:
+    if not text.strip():
+        return "空白页"
+    answer_markers = len(re.findall(r"(答[:：]|=|解[:：]|学生答题|答案)", text))
+    question_markers = len(re.findall(r"(计算|解方程|应用题|求|选择|填空|作文|阅读|Write|passage|[？?])", text, flags=re.I))
+    if answer_markers >= 3 and question_markers <= 2:
+        return "答题页"
+    if question_markers >= 2 and answer_markers <= 1:
+        return "题目页"
+    return "题目与答题混合页"
+
+
+def _page_layout_summary(text: str, page_type: str) -> str:
+    question_count = len(_extract_numbered_blocks(text))
+    return f"{page_type}，识别到约 {question_count} 个题号块。"
+
+
+def _question_page_roles(question_pages: list[int], answer_pages: list[int]) -> list[dict]:
+    roles = [{"page_index": page, "page_type": "题目页"} for page in question_pages]
+    roles.extend({"page_index": page, "page_type": "答题页"} for page in answer_pages if page not in question_pages)
+    return roles
+
+
+def _merge_reason(number: str, question_pages: list[int], answer_pages: list[int], question_text: str, answer_text: str) -> str:
+    if question_text and answer_text and question_pages and answer_pages:
+        return f"按题号 {number} 将第 {','.join(map(str, question_pages))} 页题干与第 {','.join(map(str, answer_pages))} 页作答合并。"
+    if question_text and not answer_text:
+        return f"已识别第 {number} 题题干，但未稳定匹配到学生作答。"
+    if answer_text and not question_text:
+        return f"已识别第 {number} 题作答，但题干缺失，建议教师复核。"
+    return f"第 {number} 题题干与作答匹配不完整。"
 
 
 def _merge_numbered_blocks(page_results: list[dict]) -> list[dict]:
@@ -692,6 +737,8 @@ def _merge_numbered_blocks(page_results: list[dict]) -> list[dict]:
         question_text = _pick_question_text(item["question_candidates"])
         answer_text = _pick_answer_text(item["answer_candidates"])
         confidence = _merge_confidence(question_text, answer_text, item["source_pages"])
+        question_pages = sorted({candidate.get("page") for candidate in item["question_candidates"] if candidate.get("page")})
+        answer_pages = sorted({candidate.get("page") for candidate in item["answer_candidates"] if candidate.get("page")})
         warning = "" if question_text and answer_text else "题号匹配不完整，建议教师复核"
         questions.append(
             {
@@ -702,6 +749,8 @@ def _merge_numbered_blocks(page_results: list[dict]) -> list[dict]:
                 "confidence": confidence,
                 "merge_status": _merge_status(confidence, warning),
                 "merge_warning": warning,
+                "matching_reason": _merge_reason(number, question_pages, answer_pages, question_text, answer_text),
+                "page_roles": _question_page_roles(question_pages, answer_pages),
             }
         )
     return questions
@@ -818,6 +867,8 @@ def _merge_page_metadata(pages: list[dict], page_results: list[dict]) -> list[di
                 "ocr_engine": result.get("engine"),
                 "ocr_confidence": result.get("confidence"),
                 "ocr_text": result.get("ocr_text", ""),
+                "page_type": result.get("page_type"),
+                "layout_summary": result.get("layout_summary"),
                 "warnings": result.get("warnings", []),
             }
         )

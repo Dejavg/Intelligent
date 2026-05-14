@@ -16,6 +16,7 @@ VALID_1X1_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd
 def cleanup_demo_rows():
     init_db()
     with SessionLocal() as db:
+        db.query(Assignment).filter(Assignment.title == "pytest-objective-choice").delete()
         db.query(Assignment).filter(Assignment.title == "自动化测试题").delete()
         db.query(ClassRoom).filter(ClassRoom.name == "自动化测试班").delete()
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-bulk.png").all():
@@ -26,6 +27,8 @@ def cleanup_demo_rows():
             if submission.image_name and submission.image_name.startswith("pytest-batch"):
                 db.delete(submission)
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-essay.png").all():
+            db.delete(submission)
+        for submission in db.query(Submission).filter(Submission.image_name == "pytest-objective.png").all():
             db.delete(submission)
         db.commit()
 
@@ -347,6 +350,56 @@ x=4
         detail = self.client.get(f"/api/submissions/{submission_id}").json()["data"]
         self.assertEqual(detail["essay_prompt"], essay_prompt)
         self.assertEqual(detail["grading_result"]["ai_metadata"]["essay_prompt"], essay_prompt)
+
+    def test_objective_choice_grading_and_report_fields(self):
+        question = self.client.post(
+            "/api/question-bank",
+            json={
+                "title": "pytest-objective-choice",
+                "subject": "数学",
+                "question_type": "选择题",
+                "question": "选择题：下列结果正确的是哪一项？A. 1 B. 2 C. 3 D. 4",
+                "standard_answer": "B",
+                "full_score": 5,
+                "knowledge_points": ["选择题审题"],
+            },
+        )
+        self.assertEqual(question.status_code, 200)
+        assignment_id = question.json()["data"]["id"]
+        upload = self.client.post(
+            "/api/upload",
+            json={
+                "student_id": 1,
+                "assignment_id": assignment_id,
+                "subject": "数学",
+                "question_type": "选择题",
+                "image_name": "pytest-objective.png",
+                "image_data": VALID_1X1_PNG,
+            },
+        )
+        self.assertEqual(upload.status_code, 200)
+        submission_id = upload.json()["data"]["submission_id"]
+        grade = self.client.post(
+            "/api/grade",
+            json={"submission_id": submission_id, "subject": "数学", "question_type": "选择题", "ocr_text": "答案：B"},
+        )
+        self.assertEqual(grade.status_code, 200)
+        result = grade.json()["data"]["grading_result"]
+        self.assertEqual(result["score"], 5)
+        self.assertTrue(result["is_correct"])
+        self.assertTrue(result["ai_metadata"]["objective_grading"])
+
+        report = self.client.get("/api/students/1/report")
+        self.assertEqual(report.status_code, 200)
+        report_data = report.json()["data"]
+        self.assertIn("score_trend", report_data)
+        self.assertIn("knowledge_mastery", report_data)
+        self.assertIn("error_distribution", report_data)
+
+        analysis = self.client.get("/api/classes/%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD/analysis")
+        self.assertEqual(analysis.status_code, 200)
+        self.assertIn("layer_analysis", analysis.json()["data"])
+        self.assertIn("student_comparison", analysis.json()["data"])
 
     def test_image_preprocess_creates_enhanced_copy(self):
         try:

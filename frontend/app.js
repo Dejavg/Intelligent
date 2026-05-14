@@ -1,5 +1,6 @@
 const app = document.querySelector("#app");
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_UPLOAD_PAGES = 10;
 
 // ========== State ==========
 const state = {
@@ -398,7 +399,7 @@ function uploadPreviewMarkup() {
             </div>
           </div>
         `).join("")}
-        <label class="btn secondary small upload-again" for="imageInput">重新选择图片</label>
+        <label class="btn secondary small upload-again" for="imageInput">继续添加图片</label>
       </div>
     `;
   }
@@ -438,24 +439,50 @@ function handlePreview(event) {
   const files = Array.from(event.target.files || []);
   const validation = validateImageFiles(files);
   if (!validation.ok) {
-    clearSelectedFiles();
     refreshUploadPreview();
     showToast(validation.message);
     return;
   }
   if (!files.length) {
-    clearSelectedFiles();
     refreshUploadPreview();
     return;
   }
   Promise.all(files.map(readFileAsDataURL)).then((previews) => {
-    state.selectedFiles = files;
-    state.selectedPreviews = previews;
-    state.selectedFile = files[0] || null;
-    state.selectedPreview = previews[0] || "";
+    appendSelectedFiles(files, previews);
     refreshUploadPreview();
     updateUploadStep(2);
+    event.target.value = "";
   });
+}
+
+function appendSelectedFiles(files, previews) {
+  const existingKeys = new Set(state.selectedFiles.map(fileKey));
+  const appendedFiles = [];
+  const appendedPreviews = [];
+  files.forEach((file, index) => {
+    const key = fileKey(file);
+    if (existingKeys.has(key)) return;
+    existingKeys.add(key);
+    appendedFiles.push(file);
+    appendedPreviews.push(previews[index]);
+  });
+  const combinedFiles = [...state.selectedFiles, ...appendedFiles];
+  const combinedPreviews = [...state.selectedPreviews, ...appendedPreviews];
+  const truncated = combinedFiles.length > MAX_UPLOAD_PAGES;
+  const nextFiles = combinedFiles.slice(0, MAX_UPLOAD_PAGES);
+  const nextPreviews = combinedPreviews.slice(0, MAX_UPLOAD_PAGES);
+  state.selectedFiles = nextFiles;
+  state.selectedPreviews = nextPreviews;
+  state.selectedFile = nextFiles[0] || null;
+  state.selectedPreview = nextPreviews[0] || "";
+  if (appendedFiles.length < files.length) showToast("已跳过重复图片。");
+  if (truncated) {
+    showToast(`一次最多保留 ${MAX_UPLOAD_PAGES} 页图片。`);
+  }
+}
+
+function fileKey(file) {
+  return `${file.name}-${file.size}-${file.lastModified}`;
 }
 
 function handleUploadDrag(event) {
@@ -871,6 +898,7 @@ async function renderResult(submissionId) {
         </div>
         <div class="panel weak-panel" style="margin-top:18px">
           <h3>个人薄弱点</h3>
+          ${studentTrendPanel(report.data)}
           ${weakPointList(report.data.weak_points)}
           <p class="muted">${escapeHtml(report.data.personal_suggestion)}</p>
         </div>
@@ -938,7 +966,8 @@ function ocrPreview(submission) {
         <div class="page-ocr-list">
           ${pageResults.map((page) => `
             <div class="ocr-question">
-              <strong>第 ${escapeHtml(page.page_index)} 页 · ${escapeHtml(page.engine || "OCR")}</strong>
+              <strong>第 ${escapeHtml(page.page_index)} 页 · ${escapeHtml(page.page_type || "未判定")} · ${escapeHtml(page.engine || "OCR")}</strong>
+              ${page.layout_summary ? `<p class="muted">${escapeHtml(page.layout_summary)}</p>` : ""}
               <p>${escapeHtml(summarizeText(page.ocr_text || "", 180))}</p>
             </div>
           `).join("")}
@@ -1322,7 +1351,7 @@ function paperImageGallery(submission) {
           <div class="paper-page-card">
             <div class="upload-page-head">
               <strong>第 ${escapeHtml(page.page_index || index + 1)} 页</strong>
-              <span>${escapeHtml(page.image_name || page.filename || "")}</span>
+              <span>${escapeHtml(page.page_type || "待识别")} · ${escapeHtml(page.image_name || page.filename || "")}</span>
             </div>
             <img class="preview paper-preview" src="${escapeHtml(page.image_url)}" alt="第 ${escapeHtml(page.page_index || index + 1)} 页图片" />
           </div>
@@ -1370,6 +1399,7 @@ function mergePreviewTable(questions = []) {
             <th>来源页</th>
             <th>置信度</th>
             <th>合并状态</th>
+            <th>匹配说明</th>
             <th>提示</th>
           </tr>
         </thead>
@@ -1383,6 +1413,7 @@ function mergePreviewTable(questions = []) {
                 <td>${escapeHtml((question.source_pages || []).join("、") || "-")}</td>
                 <td>${escapeHtml(formatScore((Number(question.confidence) || 0) * 100))}%</td>
                 <td><span class="tag ${statusClass}">${escapeHtml(status)}</span></td>
+                <td>${escapeHtml(question.matching_reason || "按题号自动匹配题干与作答")}</td>
                 <td>${escapeHtml(question.merge_warning || "题目与答案已按题号合并")}</td>
               </tr>
             `;
@@ -1971,6 +2002,7 @@ async function renderAnalysis() {
           ${accuracyBars(data.question_accuracy)}
         </div>
       </div>
+      ${layerAnalysisPanel(data)}
       <div class="analysis-bottom">
         <div class="panel">
           <h3>高频错误</h3>
@@ -2071,6 +2103,47 @@ function mistakeRank(items) {
   return `<div class="bar-list">${items.map((item) => `<div class="card"><strong>${escapeHtml(item.mistake)}</strong><p class="muted">出现 ${item.count} 次</p></div>`).join("")}</div>`;
 }
 
+function layerAnalysisPanel(data = {}) {
+  const layers = Array.isArray(data.layer_analysis) ? data.layer_analysis : [];
+  const comparison = Array.isArray(data.student_comparison) ? data.student_comparison : [];
+  if (!layers.length && !comparison.length) return "";
+  return `
+    <div class="analysis-grid dashboard-grid" style="margin-top:18px">
+      <div class="panel">
+        <span class="feature-tag">分层分析</span>
+        <h3>班级学生分层</h3>
+        <div class="layer-list">
+          ${layers.map((layer) => `
+            <div class="layer-card">
+              <div class="panel-title-row">
+                <strong>${escapeHtml(layer.name)} · ${escapeHtml(layer.range)}</strong>
+                <span class="tag">${escapeHtml(layer.count ?? 0)} 人</span>
+              </div>
+              <p class="muted">${escapeHtml(layer.suggestion || "")}</p>
+              <div class="tag-list">
+                ${(layer.students || []).slice(0, 6).map((student) => `<span class="tag">${escapeHtml(student.student_name)} ${escapeHtml(formatScore(student.score_rate))}%</span>`).join("") || "<span class='muted'>暂无学生</span>"}
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+      <div class="panel">
+        <span class="feature-tag">对比分析</span>
+        <h3>学生表现对比</h3>
+        <div class="comparison-list">
+          ${comparison.slice(0, 8).map((item) => `
+            <div class="trend-item">
+              <span>${escapeHtml(item.student_name)} · ${escapeHtml((item.main_weak_points || []).join("、") || "暂无明显薄弱点")}</span>
+              <strong>${escapeHtml(formatScore(item.score_rate))}%</strong>
+              <div class="bar-track"><div class="bar-fill" style="--width:${Math.max(0, Math.min(100, Number(item.score_rate) || 0))}%"></div></div>
+            </div>
+          `).join("") || "<p class='muted'>暂无对比数据</p>"}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 async function exportClassReport() {
   try {
     const text = await api(`/api/classes/${encodeURIComponent("七年级一班")}/analysis/export`);
@@ -2102,6 +2175,34 @@ function weakPointList(items) {
           `,
         )
         .join("")}
+    </div>
+  `;
+}
+
+function studentTrendPanel(report = {}) {
+  const trend = Array.isArray(report.score_trend) ? report.score_trend : [];
+  const mastery = Array.isArray(report.knowledge_mastery) ? report.knowledge_mastery : [];
+  const errors = Array.isArray(report.error_distribution) ? report.error_distribution : [];
+  if (!trend.length && !mastery.length && !errors.length) return "";
+  return `
+    <div class="student-trend-panel">
+      <div class="panel-title-row">
+        <div>
+          <span class="feature-tag">学习趋势</span>
+          <h3>学生个人趋势与掌握度</h3>
+        </div>
+        ${report.trend_summary ? `<span class="tag">${escapeHtml(report.trend_summary.direction || "趋势")}</span>` : ""}
+      </div>
+      ${report.trend_summary?.message ? `<p class="muted">${escapeHtml(report.trend_summary.message)}</p>` : ""}
+      ${trend.length ? `<div class="trend-list">${trend.slice(-6).map((item) => `
+        <div class="trend-item">
+          <span>${escapeHtml(shortDate(item.created_at) || item.assignment_title)}</span>
+          <strong>${escapeHtml(formatScore(item.score_rate))}%</strong>
+          <div class="bar-track"><div class="bar-fill" style="--width:${Math.max(0, Math.min(100, Number(item.score_rate) || 0))}%"></div></div>
+        </div>
+      `).join("")}</div>` : ""}
+      ${mastery.length ? `<h3>知识点掌握度</h3><div class="tag-list">${mastery.slice(0, 6).map((item) => `<span class="tag ${Number(item.mastery_rate) < 65 ? "danger" : Number(item.mastery_rate) < 85 ? "warning" : "success"}">${escapeHtml(item.knowledge_point)} ${escapeHtml(formatScore(item.mastery_rate))}%</span>`).join("")}</div>` : ""}
+      ${errors.length ? `<h3>错题分布</h3>${mistakeRank(errors.slice(0, 4))}` : ""}
     </div>
   `;
 }
