@@ -89,7 +89,13 @@ function renderRoute() {
 
 function setActiveNav(view) {
   document.querySelectorAll("[data-nav]").forEach((item) => {
-    item.classList.toggle("active", item.dataset.nav === view);
+    const active = item.dataset.nav === view;
+    item.classList.toggle("active", active);
+    if (active) {
+      item.setAttribute("aria-current", "page");
+    } else {
+      item.removeAttribute("aria-current");
+    }
   });
 }
 
@@ -282,30 +288,30 @@ function renderStudent() {
           <div class="form-two-col">
             <div class="field">
               <label for="studentSelect">学生</label>
-              <select id="studentSelect">${state.students.map((student) => `<option value="${student.id}" ${student.id === defaultStudent ? "selected" : ""}>${student.name} · ${student.class_name}</option>`).join("")}</select>
+              <select id="studentSelect" name="student_id">${state.students.map((student) => `<option value="${student.id}" ${student.id === defaultStudent ? "selected" : ""}>${student.name} · ${student.class_name}</option>`).join("")}</select>
             </div>
             <div class="field">
               <label for="subjectSelect">学科 / 模式</label>
-              <select id="subjectSelect">${subjects.map((subject) => `<option value="${subject}" ${subject === defaultSubject ? "selected" : ""}>${subject}</option>`).join("")}</select>
+              <select id="subjectSelect" name="subject">${subjects.map((subject) => `<option value="${subject}" ${subject === defaultSubject ? "selected" : ""}>${subject}</option>`).join("")}</select>
             </div>
           </div>
           <div class="field">
             <label for="typeSelect">题型</label>
-            <select id="typeSelect">${types.map((type) => `<option value="${type}">${type}</option>`).join("")}</select>
+            <select id="typeSelect" name="question_type">${types.map((type) => `<option value="${type}">${type}</option>`).join("")}</select>
           </div>
           <div id="essayPromptWrap">${compositionPromptMarkup(defaultSubject, types[0])}</div>
           <div id="assignmentInfo" class="card assignment-card">${assignmentInfo(defaultSubject, types[0])}</div>
           <div class="field upload-field">
             <label for="imageInput">上传试卷图片（支持多张）</label>
-            <p class="muted">支持上传多张图片，请按试卷顺序上传。例如：先上传题目页，再上传答题页；也可以上传单张完整答题卡。</p>
+            <p id="imageUploadHelp" class="muted">支持上传多张图片，请按试卷顺序上传。例如：先上传题目页，再上传答题页；也可以上传单张完整答题卡。</p>
             <div id="uploadDrop" class="upload-drop ${state.selectedFiles.length ? "has-files" : ""}">
-              <input id="imageInput" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" multiple />
+              <input id="imageInput" name="images" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" aria-describedby="imageUploadHelp" multiple />
               <div id="previewWrap">${uploadPreviewMarkup()}</div>
             </div>
           </div>
           <div class="button-row">
             <button id="gradeBtn" class="btn xl" type="submit">开始 AI 批改</button>
-            <span id="uploadStatus" class="muted"></span>
+            <span id="uploadStatus" class="muted" aria-live="polite"></span>
           </div>
         </form>
         <aside class="panel demo-guide">
@@ -3311,6 +3317,8 @@ function showToast(message) {
   if (old) old.remove();
   const toast = document.createElement("div");
   toast.className = "toast";
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 2600);

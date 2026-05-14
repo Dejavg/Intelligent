@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/styles.css?v=20260512-batch-upload" />
   </head>
   <body>
+    <a class="skip-link" href="#app">跳到主要内容</a>
     <div class="page-bg" aria-hidden="true"></div>
     <header class="topbar">
       <a class="brand" href="#home" aria-label="希沃智评首页">
@@ -17,7 +18,7 @@
           <small>AI Homework Grader</small>
         </span>
       </a>
-      <nav class="nav">
+      <nav class="nav" aria-label="主导航">
         <a href="#home" data-nav="home">首页</a>
         <a href="#student" data-nav="student">学生上传</a>
         <a href="#teacher" data-nav="teacher">教师工作台</a>
@@ -25,8 +26,8 @@
         <a href="#management" data-nav="management">管理中心</a>
       </nav>
     </header>
-    <main id="app" class="app-shell"></main>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-  <script src="/app.js?v=20260514-report-objective-upload"></script>
+    <main id="app" class="app-shell" tabindex="-1"></main>
+    <script defer src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script defer src="/app.js?v=20260514-report-objective-upload"></script>
 </body>
 </html>
