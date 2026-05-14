@@ -188,7 +188,12 @@ textarea {
   grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
   gap: 44px;
   align-items: center;
-  min-height: calc(100vh - 170px);
+  min-height: 560px;
+}
+
+.product-hero {
+  align-items: start;
+  padding: 18px 0 24px;
 }
 
 /* ========== Home ========== */
@@ -228,7 +233,7 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 24px;
+  margin-top: 28px;
 }
 
 .hero-proof span {
@@ -243,13 +248,14 @@ textarea {
 
 .hero-preview {
   position: relative;
+  align-self: start;
 }
 
 .ai-preview-card {
   position: relative;
   display: grid;
-  gap: 18px;
-  padding: 28px;
+  gap: 16px;
+  padding: 24px;
   background: var(--surface-raised);
   border: 1px solid rgba(207, 224, 255, 0.9);
   border-radius: var(--radius-lg);
@@ -283,7 +289,7 @@ textarea {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 24px;
+  padding: 22px 24px;
   color: #fff;
   background: linear-gradient(135deg, var(--primary), var(--violet));
   border-radius: var(--radius);
@@ -376,7 +382,9 @@ textarea {
 }
 
 .flow-section {
-  margin: 10px 0 30px;
+  margin: 8px 0 30px;
+  content-visibility: auto;
+  contain-intrinsic-size: 220px;
 }
 
 .flow-card {
@@ -487,6 +495,11 @@ textarea {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.capability-section {
+  content-visibility: auto;
+  contain-intrinsic-size: 520px;
+}
+
 .metric-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -494,6 +507,11 @@ textarea {
 .analysis-grid,
 .upload-grid {
   grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
+}
+
+.upload-grid {
+  align-items: start;
+  grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
 }
 
 .result-grid {
@@ -523,9 +541,9 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 18px;
-  padding: 18px 22px;
+  gap: 12px 18px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
   background: rgba(247, 250, 255, 0.9);
   border: 1px solid #cfe0ff;
   border-radius: 8px;
@@ -537,7 +555,7 @@ textarea {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: -4px;
+  margin-top: -2px;
 }
 
 .mode-tech-tags span {
@@ -558,18 +576,19 @@ textarea {
 .mode-banner strong {
   display: block;
   color: var(--primary-strong);
-  font-size: 18px;
+  font-size: 17px;
 }
 
 .mode-banner p {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: var(--muted);
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .mode-banner .tag-list {
+  gap: 6px;
   justify-content: flex-end;
-  max-width: 560px;
+  max-width: 520px;
 }
 
 /* ========== Components ========== */
@@ -758,7 +777,7 @@ textarea {
 
 .form-grid {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 
 .form-two-col {
@@ -768,18 +787,32 @@ textarea {
 }
 
 .steps-bar {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0 0 18px;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.steps-bar::before {
+  content: "";
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  top: 24px;
+  height: 2px;
+  background: #cbdcf4;
+  z-index: 0;
 }
 
 .step-item {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 62px;
-  padding: 12px;
+  min-height: 54px;
+  padding: 10px 12px;
   background: rgba(255, 255, 255, 0.82);
   border: 1px solid #dce8fb;
   border-radius: 18px;
@@ -826,6 +859,20 @@ textarea {
   background:
     linear-gradient(160deg, rgba(36, 107, 254, 0.06), rgba(118, 87, 255, 0.08)),
     #fff;
+}
+
+.upload-panel {
+  position: relative;
+  overflow: hidden;
+  padding-top: 26px;
+}
+
+.upload-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
 }
 
 .demo-guide h3 {
@@ -2398,6 +2445,10 @@ tr:last-child td {
     font-size: 56px;
   }
 
+  .product-hero {
+    padding-top: 8px;
+  }
+
   .mode-banner {
     align-items: flex-start;
     grid-template-columns: 1fr;
@@ -2464,7 +2515,6 @@ tr:last-child td {
   .metric-grid,
   .mini-grid,
   .flow-card,
-  .steps-bar,
   .question-nav,
   .runtime-grid,
   .evaluation-metric-grid,
@@ -2516,6 +2566,36 @@ tr:last-child td {
 
   .mode-banner {
     padding: 16px;
+  }
+
+  .mode-banner .tag-list,
+  .mode-tech-tags {
+    justify-content: flex-start;
+  }
+
+  .mode-banner p {
+    font-size: 15px;
+  }
+
+  .mode-tech-tags span:last-child {
+    display: none;
+  }
+
+  .steps-bar {
+    grid-auto-columns: minmax(154px, 1fr);
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    scrollbar-width: thin;
+  }
+
+  .steps-bar::before {
+    display: none;
+  }
+
+  .step-item {
+    min-height: 52px;
   }
 
   .ai-preview-card,
