@@ -390,21 +390,25 @@ function updateUploadStep(step) {
 function uploadPreviewMarkup() {
   if (state.selectedFiles.length) {
     return `
-      <div class="multi-upload-list">
-        ${state.selectedFiles.map((file, index) => `
-          <div class="upload-page-card">
-            <div class="upload-page-head">
-              <strong>第 ${index + 1} 页</strong>
-              <span>${escapeHtml(file.name)} · ${formatFileSize(file.size)}</span>
+      <div class="upload-preview-shell">
+        <div class="upload-scroll-window" role="region" aria-label="已选择的试卷图片">
+          <div class="multi-upload-list">
+            ${state.selectedFiles.map((file, index) => `
+              <div class="upload-page-card">
+                <div class="upload-page-head">
+                  <strong>第 ${index + 1} 页</strong>
+                  <span>${escapeHtml(file.name)} · ${formatFileSize(file.size)}</span>
+                </div>
+                ${state.selectedPreviews[index] ? `<img class="preview page-thumb" src="${state.selectedPreviews[index]}" alt="第 ${index + 1} 页预览" />` : ""}
+                <div class="button-row compact-actions">
+                  <button class="btn ghost small" type="button" data-page-action="up" data-page-index="${index}" ${index === 0 ? "disabled" : ""}>上移</button>
+                  <button class="btn ghost small" type="button" data-page-action="down" data-page-index="${index}" ${index === state.selectedFiles.length - 1 ? "disabled" : ""}>下移</button>
+                  <button class="btn ghost small danger-text" type="button" data-page-action="remove" data-page-index="${index}">删除</button>
+                </div>
+              </div>
+            `).join("")}
             </div>
-            ${state.selectedPreviews[index] ? `<img class="preview page-thumb" src="${state.selectedPreviews[index]}" alt="第 ${index + 1} 页预览" />` : ""}
-            <div class="button-row compact-actions">
-              <button class="btn ghost small" type="button" data-page-action="up" data-page-index="${index}" ${index === 0 ? "disabled" : ""}>上移</button>
-              <button class="btn ghost small" type="button" data-page-action="down" data-page-index="${index}" ${index === state.selectedFiles.length - 1 ? "disabled" : ""}>下移</button>
-              <button class="btn ghost small danger-text" type="button" data-page-action="remove" data-page-index="${index}">删除</button>
-            </div>
-          </div>
-        `).join("")}
+        </div>
         <label class="btn secondary small upload-again" for="imageInput">继续添加图片</label>
       </div>
     `;
@@ -973,23 +977,23 @@ function ocrPreview(submission) {
           ${pageResults.map((page) => `
             <div class="ocr-question">
               <strong>第 ${escapeHtml(page.page_index)} 页 · ${escapeHtml(page.page_type || "未判定")} · ${escapeHtml(page.engine || "OCR")}</strong>
-              ${page.layout_summary ? `<p class="muted">${escapeHtml(page.layout_summary)}</p>` : ""}
-              <p>${escapeHtml(summarizeText(page.ocr_text || "", 180))}</p>
+              ${page.layout_summary ? `<p class="muted">${displayHtml(page.layout_summary)}</p>` : ""}
+              <p>${displaySummaryHtml(page.ocr_text || "", 180)}</p>
             </div>
           `).join("")}
         </div>
         ${questions.length ? `<h3>合并后的题目与答案</h3><div class="ocr-question-list">${questions.map((question) => `
           <div class="ocr-question">
             <strong>第 ${escapeHtml(question.question_no)} 题 · 来源页 ${escapeHtml((question.source_pages || []).join("、") || "-")}</strong>
-            <p>${escapeHtml(question.question_text || "")}</p>
-            <div class="ocr-steps">${formatStudentAnswer(question.student_answer).split("\n").filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+            <p>${displayHtml(question.question_text || "")}</p>
+            <div class="ocr-steps">${displayLines(question.student_answer).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
           </div>
         `).join("")}</div>` : ""}
       </div>
     `;
   }
   if (!questions.length) {
-    return `<div class="ocr-box">${escapeHtml(submission.ocr_text || "暂无 OCR 内容")}</div>`;
+    return `<div class="ocr-box">${displayHtml(submission.ocr_text || "暂无 OCR 内容")}</div>`;
   }
   return `
     <div class="ocr-paper">
@@ -1003,8 +1007,8 @@ function ocrPreview(submission) {
         ${questions.map((question) => `
           <div class="ocr-question">
             <strong>第 ${escapeHtml(question.question_no)} 题</strong>
-            <p>${escapeHtml(question.question_text || "")}</p>
-            <div class="ocr-steps">${formatStudentAnswer(question.student_answer).split("\n").filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+            <p>${displayHtml(question.question_text || "")}</p>
+            <div class="ocr-steps">${displayLines(question.student_answer).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
           </div>
         `).join("")}
       </div>
@@ -1023,12 +1027,12 @@ function gradingDetail(submission) {
     ${answerSheetDetails(result)}
     <div class="result-analysis-card">
       <h3>${isComposition ? "内容与表达分析" : "整体过程分析"}</h3>
-      <p class="muted">${escapeHtml(result.process_analysis || result.content_analysis || "暂无分析")}</p>
-      ${result.structure_analysis ? `<p class="muted">${escapeHtml(result.structure_analysis)}</p>` : ""}
-      ${result.language_analysis ? `<p class="muted">${escapeHtml(result.language_analysis)}</p>` : ""}
+      <p class="muted">${displayHtml(result.process_analysis || result.content_analysis || "暂无分析")}</p>
+      ${result.structure_analysis ? `<p class="muted">${displayHtml(result.structure_analysis)}</p>` : ""}
+      ${result.language_analysis ? `<p class="muted">${displayHtml(result.language_analysis)}</p>` : ""}
       ${mistakeBlock(result)}
-      ${result.correct_solution ? `<h3>正确解法</h3><div class="code-box">${escapeHtml(result.correct_solution)}</div>` : ""}
-      ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${escapeHtml(result.revised_example)}</div>` : ""}
+      ${result.correct_solution ? `<h3>正确解法</h3><div class="code-box">${displayHtml(result.correct_solution)}</div>` : ""}
+      ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${displayHtml(result.revised_example)}</div>` : ""}
       <div class="result-two-col">
         <div>
           <h3>知识点</h3>
@@ -1040,9 +1044,9 @@ function gradingDetail(submission) {
         </div>
       </div>
       <h3>个性化评语</h3>
-      <p class="muted">${escapeHtml(result.comment || "暂无评语")}</p>
+      <p class="muted">${displayHtml(result.comment || "暂无评语")}</p>
       <h3>学习建议</h3>
-      <p class="muted">${escapeHtml(result.suggestion || "暂无建议")}</p>
+      <p class="muted">${displayHtml(result.suggestion || "暂无建议")}</p>
     </div>
   `;
 }
@@ -1203,21 +1207,21 @@ function answerSheetDetails(result) {
             <div class="section-head" style="margin-bottom:10px">
               <div>
                 <span class="question-kicker">第 ${escapeHtml(no)} 题 · ${escapeHtml(question.question_type || "题型未定")}</span>
-                <h3>${escapeHtml(question.question_text || "未识别到完整题干")}</h3>
+                <h3>${displayHtml(question.question_text || "未识别到完整题干")}</h3>
               </div>
               <span class="score-pill status-chip ${statusClass}">${status} · ${escapeHtml(formatScore(score))} / ${escapeHtml(formatScore(full))}</span>
             </div>
             <div class="answer-block answer-box">
               <strong>学生作答</strong>
-              <p>${escapeHtml(question.student_answer || "未识别到作答")}</p>
+              <p>${displayHtml(question.student_answer || "未识别到作答")}</p>
             </div>
             <div class="analysis-block">
               <strong>过程分析</strong>
-              <p>${escapeHtml(question.process_analysis || question.comment || "暂无分析")}</p>
+              <p>${displayHtml(question.process_analysis || question.comment || "暂无分析")}</p>
             </div>
-            ${mistakes.length ? `<div class="mistake-list">${mistakes.map((item) => `<div class="mistake-box"><strong>${escapeHtml(item.step || "错误定位")}</strong><p>${escapeHtml(item.error || item.reason || item)}</p></div>`).join("")}</div>` : ""}
-            ${question.correct_solution ? `<div class="solution-box"><strong>正确解法</strong><p>${escapeHtml(question.correct_solution)}</p></div>` : ""}
-            ${question.suggestion ? `<div class="suggestion-box"><strong>建议</strong><p>${escapeHtml(question.suggestion)}</p></div>` : ""}
+            ${mistakes.length ? `<div class="mistake-list">${mistakes.map((item) => `<div class="mistake-box"><strong>${displayHtml(item.step || "错误定位")}</strong><p>${displayHtml(item.error || item.reason || item)}</p></div>`).join("")}</div>` : ""}
+            ${question.correct_solution ? `<div class="solution-box"><strong>正确解法</strong><p>${displayHtml(question.correct_solution)}</p></div>` : ""}
+            ${question.suggestion ? `<div class="suggestion-box"><strong>建议</strong><p>${displayHtml(question.suggestion)}</p></div>` : ""}
             <div class="tag-list" style="margin-top:10px">
               ${(question.knowledge_points || []).map((point) => `<span class="tag knowledge-tag">${escapeHtml(point)}</span>`).join("")}
               ${(question.weak_points || []).map((point) => `<span class="tag danger weak-tag">${escapeHtml(point)}</span>`).join("")}
@@ -1344,7 +1348,7 @@ function engineInfo(submission) {
       <span class="tag">OCR：${escapeHtml(submission.ocr_engine || "未执行")}</span>
       ${submission.ocr_confidence == null ? "" : `<span class="tag">置信度：${Number(submission.ocr_confidence).toFixed(2)}</span>`}
     </div>
-    ${warnings.length ? `<div class="card" style="margin-bottom:12px"><strong>识别提示</strong>${warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
+    ${warnings.length ? `<div class="card" style="margin-bottom:12px"><strong>识别提示</strong>${warnings.map((item) => `<p class="muted">${displayHtml(item)}</p>`).join("")}</div>` : ""}
   `;
 }
 
@@ -1388,7 +1392,7 @@ function batchMergeSummary(submission) {
         <div>
           <strong>第 ${escapeHtml(question.question_no ?? "-")} 题</strong>
           <span>来源页：${escapeHtml((question.source_pages || []).join("、") || "-")} · 置信度 ${escapeHtml(formatScore((Number(question.confidence) || 0) * 100))}%</span>
-          ${question.merge_warning ? `<p>${escapeHtml(question.merge_warning)}</p>` : ""}
+          ${question.merge_warning ? `<p>${displayHtml(question.merge_warning)}</p>` : ""}
         </div>
       `).join("")}</div>` : ""}
     </div>
@@ -1419,8 +1423,8 @@ function mergePreviewTable(questions = []) {
                 <td>${escapeHtml((question.source_pages || []).join("、") || "-")}</td>
                 <td>${escapeHtml(formatScore((Number(question.confidence) || 0) * 100))}%</td>
                 <td><span class="tag ${statusClass}">${escapeHtml(status)}</span></td>
-                <td>${escapeHtml(question.matching_reason || "按题号自动匹配题干与作答")}</td>
-                <td>${escapeHtml(question.merge_warning || "题目与答案已按题号合并")}</td>
+                <td>${displayHtml(question.matching_reason || "按题号自动匹配题干与作答")}</td>
+                <td>${displayHtml(question.merge_warning || "题目与答案已按题号合并")}</td>
               </tr>
             `;
           }).join("")}
@@ -1440,9 +1444,9 @@ function mistakeBlock(result) {
         .map(
           (item) => `
             <div class="mistake-box">
-              <strong>${escapeHtml(item.step || item.original || "问题")}</strong>
-              <p>${escapeHtml(item.error || item.reason || "")}</p>
-              ${item.suggestion ? `<p>建议：${escapeHtml(item.suggestion)}</p>` : ""}
+              <strong>${displayHtml(item.step || item.original || "问题")}</strong>
+              <p>${displayHtml(item.error || item.reason || "")}</p>
+              ${item.suggestion ? `<p>建议：${displayHtml(item.suggestion)}</p>` : ""}
             </div>
           `,
         )
@@ -1739,7 +1743,7 @@ function teacherAiSummary(submission) {
   return `
     <div class="review-ai-card">
       <strong>AI 结论摘要</strong>
-      <p>${escapeHtml(summary)}</p>
+      <p>${displayHtml(summary)}</p>
       ${weakPoints.length ? `<div class="tag-list">${weakPoints.map((point) => `<span class="tag">${escapeHtml(point)}</span>`).join("")}</div>` : ""}
       ${
         reviewQuestions.length
@@ -1749,7 +1753,7 @@ function teacherAiSummary(submission) {
                   <div>
                     <span>第 ${escapeHtml(question.question_no || "-")} 题</span>
                     <strong>${escapeHtml(formatScore(question.score))} / ${escapeHtml(formatScore(question.full_score))} · ${escapeHtml(questionStatus(question))}</strong>
-                    <p>${escapeHtml(question.process_analysis || question.comment || "建议复核该题扣分依据。")}</p>
+                    <p>${displayHtml(question.process_analysis || question.comment || "建议复核该题扣分依据。")}</p>
                   </div>
                 `,
               )
@@ -1827,18 +1831,18 @@ function questionReviewCard(submission, question, index, teacher) {
       <div class="question-review-head">
         <div>
           <span class="question-kicker">第 ${escapeHtml(no)} 题 · ${escapeHtml(question.question_type || "题型未定")}</span>
-          <h4>${escapeHtml(summarizeText(question.question_text || "未识别题干", 54))}</h4>
+          <h4>${displaySummaryHtml(question.question_text || "未识别题干", 54)}</h4>
         </div>
         <span class="score-pill ${statusClass}">${escapeHtml(status)} · ${escapeHtml(formatScore(aiScore))} / ${escapeHtml(formatScore(full || "-"))}</span>
       </div>
       <div class="review-question-body">
         <div class="answer-box compact-card">
           <strong>学生作答</strong>
-          <p>${escapeHtml(summarizeText(question.student_answer || "未识别作答", 140))}</p>
+          <p>${displaySummaryHtml(question.student_answer || "未识别作答", 140)}</p>
         </div>
         <div class="compact-card">
           <strong>AI 错因</strong>
-          <p class="muted">${escapeHtml(mistakes)}</p>
+          <p class="muted">${displayHtml(mistakes)}</p>
         </div>
         <div class="compact-card">
           <strong>AI 知识点</strong>
@@ -2500,7 +2504,7 @@ function ocrTestResultMarkup() {
       ${result.message ? `<p class="muted">${escapeHtml(result.message)}</p>` : ""}
       ${result.warnings?.length ? `<div class="card compact-card"><strong>识别提示</strong>${result.warnings.map((item) => `<p class="muted">${escapeHtml(item)}</p>`).join("")}</div>` : ""}
       ${result.questionCount ? structuredOcrSummary(result.structured) : ""}
-      <div class="code-box">${escapeHtml(result.rawText || "暂无 OCR 文本")}</div>
+      <div class="code-box">${displayHtml(result.rawText || "暂无 OCR 文本")}</div>
     </div>
   `;
 }
@@ -2513,8 +2517,8 @@ function structuredOcrSummary(structured) {
       ${questions.slice(0, 6).map((question) => `
         <div class="ocr-question">
           <strong>第 ${escapeHtml(question.question_no ?? "-")} 题</strong>
-          <p>${escapeHtml(question.question_text || "")}</p>
-          <div class="ocr-steps">${formatStudentAnswer(question.student_answer).split("\n").filter(Boolean).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
+          <p>${displayHtml(question.question_text || "")}</p>
+          <div class="ocr-steps">${displayLines(question.student_answer).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
         </div>
       `).join("")}
     </div>
@@ -3110,6 +3114,83 @@ function defaultQuestionReviewReason(question) {
 function summarizeText(value, maxLength = 80) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function displayText(value) {
+  let text = formatStudentAnswer(value)
+    .replace(/\r\n/g, "\n")
+    .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
+    .replace(/\\\[([\s\S]*?)\\\]/g, "$1")
+    .replace(/\$\$([\s\S]*?)\$\$/g, "$1")
+    .replace(/(^|[^\\])\$([^$\n]+?)\$/g, "$1$2")
+    .replace(/\\begin\{(?:align|aligned|array|cases|matrix|pmatrix|bmatrix)\*?\}/g, "")
+    .replace(/\\end\{(?:align|aligned|array|cases|matrix|pmatrix|bmatrix)\*?\}/g, "")
+    .replace(/\\(?:text|mathrm|mathbf|operatorname)\s*\{([^{}]+)\}/g, "$1")
+    .replace(/\\\\/g, "\n")
+    .replace(/\\(?:left|right)\s*/g, "")
+    .replace(/\\(?:quad|qquad|,|;|:|!)/g, " ")
+    .replace(/&=/g, "=")
+    .replace(/&/g, " ");
+
+  const replacements = [
+    [/\\times/g, "×"],
+    [/\\div/g, "÷"],
+    [/\\cdot/g, "·"],
+    [/\\pm/g, "±"],
+    [/\\leq?/g, "≤"],
+    [/\\geq?/g, "≥"],
+    [/\\neq?/g, "≠"],
+    [/\\approx/g, "≈"],
+    [/\\therefore/g, "∴"],
+    [/\\because/g, "∵"],
+    [/\\triangle|\\Delta/g, "△"],
+    [/\\perp/g, "⊥"],
+    [/\\parallel/g, "∥"],
+    [/\\angle/g, "∠"],
+    [/\\circ/g, "°"],
+    [/\\alpha/g, "α"],
+    [/\\beta/g, "β"],
+    [/\\gamma/g, "γ"],
+    [/\\theta/g, "θ"],
+    [/\\sim/g, "~"],
+    [/\\infty/g, "∞"],
+    [/\\%/g, "%"],
+    [/\\ldots|\\cdots/g, "..."],
+  ];
+  replacements.forEach(([pattern, replacement]) => {
+    text = text.replace(pattern, replacement);
+  });
+
+  for (let index = 0; index < 4; index += 1) {
+    text = text
+      .replace(/\\?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "$1/$2")
+      .replace(/(^|[^a-zA-Z])rac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "$1$2/$3")
+      .replace(/\\sqrt\s*\{([^{}]+)\}/g, "√($1)")
+      .replace(/\\boxed\s*\{([^{}]+)\}/g, "$1")
+      .replace(/\^\{([^{}]+)\}/g, "^$1")
+      .replace(/_\{([^{}]+)\}/g, "_$1");
+  }
+
+  return text
+    .replace(/\^\s*°/g, "°")
+    .replace(/\$/g, "")
+    .replace(/\\([a-zA-Z]+)\b/g, "$1")
+    .replace(/[{}]/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function displayHtml(value) {
+  return escapeHtml(displayText(value));
+}
+
+function displaySummaryHtml(value, maxLength = 80) {
+  return escapeHtml(summarizeText(displayText(value), maxLength));
+}
+
+function displayLines(value) {
+  return displayText(value).split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
 function getTypes(subject) {
