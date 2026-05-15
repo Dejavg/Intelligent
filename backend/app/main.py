@@ -64,6 +64,26 @@ report_service = ReportService()
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_BATCH_PAGES = 10
+COMPOSITION_ASSIGNMENT_TEMPLATES = {
+    "语文": {
+        "title": "语文作文智能批改",
+        "subject": "语文",
+        "question_type": "作文",
+        "question": "请上传语文作文图片，并填写作文题目或写作要求，AI 将围绕切题度、内容、结构、语言表达和书写规范进行批改。",
+        "standard_answer": "围绕作文题目完成写作，中心明确，内容具体，结构清晰，语言通顺，书写规范。",
+        "full_score": 60,
+        "knowledge_points": ["审题立意", "内容表达", "结构层次", "语言表达", "书写规范"],
+    },
+    "英语": {
+        "title": "Weekend Writing",
+        "subject": "英语",
+        "question_type": "作文",
+        "question": "Write a short passage about your weekend.",
+        "standard_answer": "Use past tense to describe weekend activities clearly.",
+        "full_score": 20,
+        "knowledge_points": ["一般过去时", "冠词", "be 动词", "句子结构"],
+    },
+}
 
 
 @app.on_event("startup")
@@ -916,11 +936,44 @@ def _resolve_assignment(db: Session, payload: UploadRequest) -> Assignment:
     if assignment:
         return assignment
 
+    if _is_composition_request(payload.subject, payload.question_type):
+        assignment = _ensure_composition_assignment(db, payload.subject, payload.question_type)
+        if assignment:
+            return assignment
+
     assignment = db.query(Assignment).filter(Assignment.subject == payload.subject).first()
     if assignment:
         return assignment
 
     raise HTTPException(status_code=404, detail="未找到匹配作业")
+
+
+def _is_composition_request(subject: str, question_type: str) -> bool:
+    type_text = (question_type or "").lower()
+    return subject in {"语文", "英语"} and any(token in type_text for token in ("作文", "主观", "写作", "essay"))
+
+
+def _ensure_composition_assignment(db: Session, subject: str, question_type: str) -> Assignment | None:
+    template = COMPOSITION_ASSIGNMENT_TEMPLATES.get(subject)
+    if not template:
+        return None
+
+    assignment = (
+        db.query(Assignment)
+        .filter(Assignment.subject == subject, Assignment.question_type == question_type)
+        .first()
+    )
+    if assignment:
+        return assignment
+
+    data = {**template, "question_type": question_type or template["question_type"]}
+    if data["question_type"] != template["question_type"]:
+        data["title"] = f"{subject}{data['question_type']}智能批改"
+    assignment = Assignment(**data)
+    db.add(assignment)
+    db.flush()
+    db.refresh(assignment)
+    return assignment
 
 
 def _get_submission(db: Session, submission_id: int) -> Submission:

@@ -1223,20 +1223,74 @@ textarea {
   align-items: start;
 }
 
+.result-overview-grid {
+  margin-bottom: 18px;
+}
+
 .paper-page-card .paper-preview {
   max-height: 420px;
 }
 
 /* ========== Result ========== */
 .paper-side {
-  position: sticky;
-  top: 92px;
   align-self: start;
+}
+
+.paper-scroll-window {
+  max-height: clamp(460px, 60vh, 680px);
+  margin-top: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 8px 2px 2px;
+  scrollbar-gutter: stable;
+}
+
+.paper-scroll-window::-webkit-scrollbar {
+  width: 10px;
+}
+
+.paper-scroll-window::-webkit-scrollbar-track {
+  background: rgba(229, 238, 252, 0.8);
+  border-radius: 999px;
+}
+
+.paper-scroll-window::-webkit-scrollbar-thumb {
+  background: #9eb8e5;
+  border: 2px solid rgba(255, 255, 255, 0.96);
+  border-radius: 999px;
+}
+
+.paper-scroll-window::-webkit-scrollbar-thumb:hover {
+  background: #7d9bd1;
 }
 
 .grading-side {
   display: grid;
   gap: 18px;
+}
+
+.grading-overview-side {
+  display: grid;
+  align-content: start;
+}
+
+.result-detail-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.result-detail-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.result-detail-panel > .ocr-paper,
+.result-detail-panel > .merge-summary-card,
+.result-detail-panel > .composition-card,
+.result-detail-panel > .presentation-guide,
+.result-detail-panel > .question-nav-card,
+.result-detail-panel > .result-analysis-card {
+  margin-top: 0;
 }
 
 .result-summary-card,
@@ -2507,6 +2561,12 @@ tr:last-child td {
 
   .paper-side {
     position: static;
+  }
+
+  .paper-scroll-window {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .feature-grid,

@@ -241,7 +241,7 @@ class GradingService:
         return self._grade_chinese(ocr_text, assignment, essay_prompt=essay_prompt)
 
     def _is_composition(self, subject: str, question_type: str) -> bool:
-        return subject in {"语文", "英语"} and any(token in question_type.lower() for token in ["作文", "主观", "essay"])
+        return subject in {"语文", "英语"} and any(token in question_type.lower() for token in ["作文", "主观", "写作", "essay"])
 
     def _is_answer_sheet(self, subject: str, question_type: str, assignment: Assignment) -> bool:
         return (

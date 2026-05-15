@@ -24,6 +24,23 @@ const state = {
   questionReviewResults: {},
 };
 
+const COMPOSITION_TYPE_BY_SUBJECT = {
+  "语文": "作文",
+  "英语": "作文",
+};
+
+const COMPOSITION_ASSIGNMENT_FALLBACKS = {
+  "语文": {
+    title: "语文作文智能批改",
+    subject: "语文",
+    question_type: "作文",
+    question: "请上传语文作文图片，并填写作文题目或写作要求，AI 将围绕切题度、内容、结构、语言表达和书写规范进行批改。",
+    standard_answer: "围绕作文题目完成写作，中心明确，内容具体，结构清晰，语言通顺，书写规范。",
+    full_score: 60,
+    knowledge_points: ["审题立意", "内容表达", "结构层次", "语言表达", "书写规范"],
+  },
+};
+
 document.addEventListener("DOMContentLoaded", init);
 window.addEventListener("hashchange", renderRoute);
 
@@ -888,7 +905,7 @@ async function renderResult(submissionId) {
             <a class="btn ghost" href="#teacher/${submission.id}">教师复核</a>
           </div>
         </div>
-        <div class="result-grid result-page-grid">
+        <div class="result-grid result-page-grid result-overview-grid">
           <aside class="panel paper-side">
             <div class="panel-title-row">
               <div>
@@ -896,14 +913,28 @@ async function renderResult(submissionId) {
                 <p class="muted">保留原始答题卡，便于教师对照复核。</p>
               </div>
             </div>
-            ${paperImageGallery(submission)}
-            <h3>OCR 识别结果</h3>
+            <div class="paper-scroll-window" role="region" aria-label="原始作业图片预览">
+              ${paperImageGallery(submission)}
+            </div>
+          </aside>
+          <div class="panel grading-overview-side">
+            ${resultSummaryCard(submission)}
+          </div>
+        </div>
+        <div class="result-detail-stack">
+          <div class="panel result-detail-panel">
+            <div class="panel-title-row">
+              <div>
+                <h3>OCR 识别与合并结果</h3>
+                <p class="muted">查看识别引擎、多页 OCR、题目与作答合并信息。</p>
+              </div>
+            </div>
             ${engineInfo(submission)}
             ${ocrPreview(submission)}
             ${batchMergeSummary(submission)}
-          </aside>
-          <div class="panel grading-side">
-            ${gradingDetail(submission)}
+          </div>
+          <div class="panel grading-side result-detail-panel">
+            ${gradingDetail(submission, { includeSummary: false })}
           </div>
         </div>
         <div class="panel weak-panel" style="margin-top:18px">
@@ -1016,11 +1047,12 @@ function ocrPreview(submission) {
   `;
 }
 
-function gradingDetail(submission) {
+function gradingDetail(submission, options = {}) {
   const result = submission.grading_result || {};
   const isComposition = submission.subject === "英语" || submission.subject === "语文";
+  const includeSummary = options.includeSummary !== false;
   return `
-    ${resultSummaryCard(submission)}
+    ${includeSummary ? resultSummaryCard(submission) : ""}
     ${compositionResultCard(submission)}
     ${presentationGuide(submission)}
     ${questionQuickNav(result)}
@@ -3072,8 +3104,16 @@ function structuredPreprocessUsed(structured = {}) {
 function findAssignment(subject, type) {
   return (
     state.assignments.find((item) => item.subject === subject && item.question_type === type) ||
+    fallbackCompositionAssignment(subject, type) ||
     state.assignments.find((item) => item.subject === subject)
   );
+}
+
+function fallbackCompositionAssignment(subject, type) {
+  if (!isCompositionSelection(subject, type)) return null;
+  const template = COMPOSITION_ASSIGNMENT_FALLBACKS[String(subject || "")];
+  if (!template) return null;
+  return { ...template, question_type: type || template.question_type };
 }
 
 function getAnswerSheetQuestions(result = {}) {
@@ -3194,13 +3234,16 @@ function displayLines(value) {
 }
 
 function getTypes(subject) {
-  return unique(state.assignments.filter((item) => item.subject === subject).map((item) => item.question_type));
+  const types = state.assignments.filter((item) => item.subject === subject).map((item) => item.question_type);
+  const compositionType = COMPOSITION_TYPE_BY_SUBJECT[String(subject || "")];
+  if (compositionType) types.push(compositionType);
+  return unique(types);
 }
 
 function isCompositionSelection(subject, type) {
   const subjectText = String(subject || "");
   const typeText = String(type || "").toLowerCase();
-  return ["语文", "英语"].includes(subjectText) && (typeText.includes("作文") || typeText.includes("主观") || typeText.includes("essay"));
+  return ["语文", "英语"].includes(subjectText) && (typeText.includes("作文") || typeText.includes("主观") || typeText.includes("写作") || typeText.includes("essay"));
 }
 
 function formatStudentAnswer(value) {

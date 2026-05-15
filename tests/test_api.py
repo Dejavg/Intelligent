@@ -28,6 +28,8 @@ def cleanup_demo_rows():
                 db.delete(submission)
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-essay.png").all():
             db.delete(submission)
+        for submission in db.query(Submission).filter(Submission.image_name == "pytest-chinese-essay.png").all():
+            db.delete(submission)
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-objective.png").all():
             db.delete(submission)
         db.commit()
@@ -381,6 +383,47 @@ x=4
         detail = self.client.get(f"/api/submissions/{submission_id}").json()["data"]
         self.assertEqual(detail["essay_prompt"], essay_prompt)
         self.assertEqual(detail["grading_result"]["ai_metadata"]["essay_prompt"], essay_prompt)
+
+    def test_chinese_composition_type_is_available_and_gradable(self):
+        assignments = self.client.get("/api/assignments").json()["data"]
+        assignment = next(
+            (item for item in assignments if item["subject"] == "语文" and item["question_type"] == "作文"),
+            None,
+        )
+        self.assertIsNotNone(assignment)
+
+        essay_prompt = "请以《难忘的一天》为题写一篇不少于 600 字的作文。"
+        upload = self.client.post(
+            "/api/upload",
+            json={
+                "student_id": 3,
+                "subject": "语文",
+                "question_type": "作文",
+                "image_name": "pytest-chinese-essay.png",
+                "image_data": VALID_1X1_PNG,
+                "essay_prompt": essay_prompt,
+            },
+        )
+        self.assertEqual(upload.status_code, 200)
+        submission_id = upload.json()["data"]["submission_id"]
+
+        grade = self.client.post(
+            "/api/grade",
+            json={
+                "submission_id": submission_id,
+                "subject": "语文",
+                "question_type": "作文",
+                "ocr_text": "今天学校举行运动会。接力赛时同学们一直为我加油，我感到集体的力量非常温暖。",
+                "essay_prompt": essay_prompt,
+            },
+        )
+        self.assertEqual(grade.status_code, 200)
+        data = grade.json()["data"]
+        result = data["grading_result"]
+        self.assertEqual(data["submission"]["subject"], "语文")
+        self.assertEqual(data["submission"]["question_type"], "作文")
+        self.assertEqual(result["full_score"], 60)
+        self.assertIn("composition_dimensions", result["ai_metadata"])
 
     def test_objective_choice_grading_and_report_fields(self):
         question = self.client.post(
