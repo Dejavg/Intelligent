@@ -1669,6 +1669,65 @@ textarea {
   align-items: start;
 }
 
+.subject-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.subject-score-card {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(36, 107, 254, 0.08), rgba(18, 184, 134, 0.08)),
+    var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.subject-score-card h3 {
+  margin: 6px 0 0;
+}
+
+.subject-score-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.subject-score-main strong {
+  color: var(--brand);
+  font-size: 42px;
+  line-height: 1;
+}
+
+.subject-score-main span,
+.subject-score-rate,
+.subject-score-meta {
+  color: var(--muted);
+}
+
+.subject-score-rate,
+.subject-score-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.subject-score-rate strong {
+  color: var(--ink);
+}
+
+.subject-score-meta {
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
 .analysis-bottom {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
@@ -2508,6 +2567,7 @@ tr:last-child td {
   .hero,
   .analysis-grid,
   .analysis-bottom,
+  .subject-score-grid,
   .upload-grid,
   .result-grid,
   .teacher-layout,

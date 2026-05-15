@@ -472,8 +472,11 @@ x=4
 
         analysis = self.client.get("/api/classes/%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD/analysis")
         self.assertEqual(analysis.status_code, 200)
-        self.assertIn("layer_analysis", analysis.json()["data"])
-        self.assertIn("student_comparison", analysis.json()["data"])
+        analysis_data = analysis.json()["data"]
+        self.assertIn("layer_analysis", analysis_data)
+        self.assertIn("student_comparison", analysis_data)
+        self.assertEqual([item["subject"] for item in analysis_data["subject_analysis"]], ["数学", "英语", "语文"])
+        self.assertTrue(all("score_rate" in item for item in analysis_data["subject_analysis"]))
 
     def test_image_preprocess_creates_enhanced_copy(self):
         try:

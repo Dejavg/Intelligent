@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from ..models import Assignment, GradingResult, Submission, User
 
+SUBJECT_SCORE_SECTIONS = ("数学", "英语", "语文")
+
 
 class ReportService:
     def student_report(self, db: Session, student_id: int) -> dict:
@@ -141,6 +143,7 @@ class ReportService:
             "lowest_score": lowest_score,
             "accuracy_rate": f"{accuracy_rate}%",
             "average_score_rate": f"{round(sum(scores) / sum(full_scores) * 100, 1)}%" if sum(full_scores) else "0%",
+            "subject_analysis": _subject_analysis(submissions),
             "question_accuracy": question_accuracy,
             "common_weak_points": common_weak_points,
             "frequent_mistakes": [
@@ -152,6 +155,49 @@ class ReportService:
             "teacher_suggestion": _teacher_suggestion(common_weak_points),
             "submissions": [_submission_summary(submission) for submission in submissions],
         }
+
+
+def _subject_analysis(submissions: list[Submission]) -> list[dict]:
+    rows: list[dict] = []
+    for subject in SUBJECT_SCORE_SECTIONS:
+        subject_submissions = [submission for submission in submissions if _analysis_subject(submission) == subject]
+        scores = [_effective_score(submission) for submission in subject_submissions]
+        full_scores = [float(submission.assignment.full_score or 0) for submission in subject_submissions]
+        full_total = sum(full_scores)
+        correct_count = sum(1 for submission in subject_submissions if submission.grading_result and submission.grading_result.is_correct)
+        rows.append(
+            {
+                "subject": subject,
+                "total_submissions": len(subject_submissions),
+                "average_score": round(sum(scores) / len(scores), 1) if scores else 0,
+                "highest_score": round(max(scores), 1) if scores else 0,
+                "lowest_score": round(min(scores), 1) if scores else 0,
+                "total_score": round(sum(scores), 1),
+                "total_full_score": round(full_total, 1),
+                "score_rate": round(sum(scores) / full_total * 100, 1) if full_total else 0,
+                "accuracy_rate": round(correct_count / len(subject_submissions) * 100, 1) if subject_submissions else 0,
+            }
+        )
+    return rows
+
+
+def _analysis_subject(submission: Submission) -> str:
+    for candidate in (submission.subject, submission.assignment.subject if submission.assignment else ""):
+        if candidate in SUBJECT_SCORE_SECTIONS:
+            return candidate
+
+    result = submission.grading_result
+    metadata = result.ai_metadata if result and isinstance(result.ai_metadata, dict) else {}
+    answer_sheet = metadata.get("answer_sheet") if isinstance(metadata, dict) else None
+    questions = (answer_sheet.get("questions") or []) if isinstance(answer_sheet, dict) else []
+    subject_counts = Counter(
+        question.get("subject")
+        for question in questions
+        if isinstance(question, dict) and question.get("subject") in SUBJECT_SCORE_SECTIONS
+    )
+    if subject_counts:
+        return subject_counts.most_common(1)[0][0]
+    return ""
 
 
 def _effective_score(submission: Submission) -> float:

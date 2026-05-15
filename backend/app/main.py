@@ -622,6 +622,10 @@ def export_class_analysis(class_name: str, db: Session = Depends(get_db)) -> str
     mistake_lines = "\n".join(
         f"- {item['mistake']}（{item['count']} 次）" for item in analysis["frequent_mistakes"]
     ) or "- 暂无高频错误"
+    subject_lines = "\n".join(
+        f"- {item['subject']}：{item['total_submissions']} 份，平均分 {item['average_score']}，平均得分率 {item['score_rate']}%"
+        for item in analysis.get("subject_analysis", [])
+    ) or "- 暂无学科成绩数据"
     return f"""# {class_name} 学情分析报告
 
 ## 核心指标
@@ -631,6 +635,9 @@ def export_class_analysis(class_name: str, db: Session = Depends(get_db)) -> str
 - 最高分：{analysis['highest_score']}
 - 最低分：{analysis['lowest_score']}
 - 整体正确率：{analysis['accuracy_rate']}
+
+## 学科成绩
+{subject_lines}
 
 ## 高频薄弱知识点
 {weak_lines}

@@ -432,7 +432,7 @@ function uploadPreviewMarkup() {
   }
   return `
     <div class="upload-empty">
-      <strong>拖拽或点击上传数学练习卷</strong>
+      <strong>拖拽或点击上传试卷</strong>
       <span>支持 JPG / PNG / JPEG，可一次选择多张图片并按页码顺序合并批改。</span>
     </div>
   `;
@@ -2034,6 +2034,7 @@ async function renderAnalysis() {
         ${metricCard("最高分", data.highest_score)}
         ${metricCard("最低分", data.lowest_score)}
       </div>
+      ${subjectScoreSections(data.subject_analysis)}
       <div class="analysis-grid dashboard-grid" style="margin-top:18px">
         <div class="panel" data-chart-panel="weak">
           <h3>薄弱知识点排行</h3>
@@ -2100,6 +2101,53 @@ function renderECharts(data) {
 
 function metricCard(label, value) {
   return `<div class="metric-card"><span class="muted">${label}</span><div class="score" style="font-size:34px">${value}</div></div>`;
+}
+
+function subjectScoreSections(items = []) {
+  const subjects = ["数学", "英语", "语文"];
+  const rows = subjects.map((subject) => items.find((item) => item.subject === subject) || {
+    subject,
+    total_submissions: 0,
+    average_score: 0,
+    highest_score: 0,
+    lowest_score: 0,
+    total_score: 0,
+    total_full_score: 0,
+    score_rate: 0,
+    accuracy_rate: 0,
+  });
+  return `
+    <div class="subject-score-grid" aria-label="按学科查看班级成绩">
+      ${rows.map((item) => {
+        const rate = Math.max(0, Math.min(100, Number(item.score_rate) || 0));
+        return `
+          <section class="subject-score-card">
+            <div class="panel-title-row">
+              <div>
+                <span class="feature-tag">${escapeHtml(item.subject)}成绩</span>
+                <h3>${escapeHtml(item.subject)}成绩</h3>
+              </div>
+              <span class="tag">${escapeHtml(item.total_submissions ?? 0)} 份</span>
+            </div>
+            <div class="subject-score-main">
+              <strong>${escapeHtml(formatScore(item.average_score ?? 0))}</strong>
+              <span>平均分</span>
+            </div>
+            <div class="subject-score-rate">
+              <span>平均得分率</span>
+              <strong>${escapeHtml(formatScore(item.score_rate ?? 0))}%</strong>
+            </div>
+            <div class="bar-track"><div class="bar-fill" style="--width:${rate}%"></div></div>
+            <div class="subject-score-meta">
+              <span>最高 ${escapeHtml(formatScore(item.highest_score ?? 0))}</span>
+              <span>最低 ${escapeHtml(formatScore(item.lowest_score ?? 0))}</span>
+              <span>正确率 ${escapeHtml(formatScore(item.accuracy_rate ?? 0))}%</span>
+            </div>
+          </section>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function rankBars(items, labelKey, valueKey) {
