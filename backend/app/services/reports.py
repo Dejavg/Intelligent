@@ -189,6 +189,16 @@ def _analysis_subject(submission: Submission) -> str:
     result = submission.grading_result
     metadata = result.ai_metadata if result and isinstance(result.ai_metadata, dict) else {}
     answer_sheet = metadata.get("answer_sheet") if isinstance(metadata, dict) else None
+    if isinstance(answer_sheet, dict):
+        detected = answer_sheet.get("detected_subject")
+        if detected in SUBJECT_SCORE_SECTIONS:
+            return detected
+        detected_subjects = answer_sheet.get("detected_subjects") or []
+        if isinstance(detected_subjects, str):
+            detected_subjects = [detected_subjects]
+        detected_counter = Counter(subject for subject in detected_subjects if subject in SUBJECT_SCORE_SECTIONS)
+        if detected_counter:
+            return detected_counter.most_common(1)[0][0]
     questions = (answer_sheet.get("questions") or []) if isinstance(answer_sheet, dict) else []
     subject_counts = Counter(
         question.get("subject")

@@ -1577,7 +1577,7 @@ async function renderTeacher(selectedId) {
           <div class="table-toolbar">
             <div>
               <strong>作业提交列表</strong>
-              <p class="muted">按最新提交排序，点击右侧按钮查看复核详情。</p>
+              <p class="muted">按最新提交排序，点击查看后在下方展开试卷详情与教师复核。</p>
             </div>
             <span class="tag">${filteredSubmissions.length} 条记录</span>
           </div>
@@ -1606,6 +1606,9 @@ async function renderTeacher(selectedId) {
     button.addEventListener("click", () => {
       location.hash = `#teacher/${button.dataset.openSubmission}`;
     });
+  });
+  document.querySelectorAll("[data-delete-submission]").forEach((button) => {
+    button.addEventListener("click", handleDeleteSubmission);
   });
   document.querySelectorAll("[data-teacher-filter]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1679,7 +1682,12 @@ function submissionRow(submission, selectedId) {
       <td>${escapeHtml(submission.question_type)}</td>
       <td><span class="status ${statusClassName(submission.status)}">${escapeHtml(submission.status)}</span></td>
       <td>${score === "-" ? "-" : `${score}/${full}`}</td>
-      <td><button class="btn ghost small" type="button" data-open-submission="${submission.id}">${isSelected ? "正在查看" : "查看详情"}</button></td>
+      <td>
+        <div class="table-actions">
+          <button class="btn ghost small" type="button" data-open-submission="${submission.id}">${isSelected ? "正在查看" : "查看详情"}</button>
+          <button class="btn danger small" type="button" data-delete-submission="${submission.id}" data-delete-title="${escapeHtml(`${submission.student.name} · ${submission.assignment.title}`)}">删除</button>
+        </div>
+      </td>
     </tr>
   `;
 }
@@ -1696,6 +1704,7 @@ function reviewPanel(submission) {
     "已查看 OCR 识别、逐题评分和错因归因；如调整分数，请在此说明依据，便于后续沉淀为二次标注样本。";
   return `
     <aside class="teacher-detail">
+      <div class="teacher-detail-main">
       <div class="panel review-overview">
         <div class="section-head compact">
           <div>
@@ -1762,6 +1771,10 @@ function reviewPanel(submission) {
           <button id="returnBtn" class="btn warn" type="button" data-submission-id="${submission.id}">返回学生</button>
         </div>
       </form>
+      </div>
+      <div class="teacher-detail-side">
+        ${teacherRecognizedAnswersPanel(submission)}
+      </div>
     </aside>
   `;
 }
@@ -1794,6 +1807,64 @@ function teacherAiSummary(submission) {
       }
     </div>
   `;
+}
+
+function teacherRecognizedAnswersPanel(submission) {
+  const rows = recognizedAnswerRows(submission);
+  return `
+    <div class="panel recognized-answer-panel">
+      <span class="feature-tag">识别答案</span>
+      <h3>学生答题卡识别答案</h3>
+      <p class="muted">教师复核时可直接对照 OCR / 多图合并后识别出的学生作答。</p>
+      <div class="recognized-answer-list">
+        ${
+          rows.length
+            ? rows.map((row) => `
+                <article class="recognized-answer-item">
+                  <div class="panel-title-row">
+                    <strong>${escapeHtml(row.label)}</strong>
+                    <span class="tag">${escapeHtml(row.meta)}</span>
+                  </div>
+                  <div class="answer-box">${displayHtml(row.answer || "未识别到作答")}</div>
+                </article>
+              `).join("")
+            : `<div class="empty compact">暂无可展示的学生作答识别结果</div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function recognizedAnswerRows(submission) {
+  const result = submission.grading_result || {};
+  const questions = getAnswerSheetQuestions(result);
+  if (questions.length) {
+    return questions.map((question, index) => ({
+      label: `第 ${question.question_no || index + 1} 题`,
+      meta: question.question_type || "题型未定",
+      answer: question.student_answer || "",
+    }));
+  }
+  if (isCompositionSelection(submission.subject, submission.question_type)) {
+    return [{
+      label: "作文正文",
+      meta: submission.subject,
+      answer: submission.ocr_text || "",
+    }];
+  }
+  const text = recognizedOcrText(submission);
+  return text ? [{ label: "OCR 识别文本", meta: submission.ocr_engine || "OCR", answer: text }] : [];
+}
+
+function recognizedOcrText(submission) {
+  const text = submission.ocr_text || "";
+  if (!text.trim()) return "";
+  try {
+    const data = JSON.parse(text);
+    return data.merged_ocr_text || data.ocr_text || JSON.stringify(data, null, 2);
+  } catch {
+    return text;
+  }
 }
 
 function teacherCompositionSummary(submission) {
@@ -1925,6 +1996,21 @@ async function handleReviewSubmit(event) {
 async function handleReturnSubmit(event) {
   const id = event.currentTarget.dataset.submissionId;
   await submitReview(id, "return");
+}
+
+async function handleDeleteSubmission(event) {
+  const button = event.currentTarget;
+  const id = button.dataset.deleteSubmission;
+  const title = button.dataset.deleteTitle || "这条提交记录";
+  if (!id) return;
+  if (!window.confirm(`确认删除「${title}」吗？删除后对应 AI 批改结果和教师标注也会一起移除。`)) return;
+  try {
+    await api(`/api/submissions/${id}`, { method: "DELETE" });
+    showToast("提交记录已删除");
+    await renderTeacher();
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 function updateQuestionReviewDiff(event) {

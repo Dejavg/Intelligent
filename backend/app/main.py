@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -64,6 +65,8 @@ report_service = ReportService()
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_BATCH_PAGES = 10
+CORE_SUBJECTS = {"数学", "英语", "语文"}
+AUTO_SUBJECT_VALUES = {"自动识别", "综合", "答题卡", "整张答题卡"}
 COMPOSITION_ASSIGNMENT_TEMPLATES = {
     "语文": {
         "title": "语文作文智能批改",
@@ -467,6 +470,9 @@ def run_grade(payload: GradeRequest, db: Session = Depends(get_db)) -> dict:
         essay_prompt=essay_prompt,
     )
 
+    detected_subject = _detected_subject_from_grading(grading)
+    if detected_subject and _should_apply_detected_subject(submission, subject):
+        submission.subject = detected_subject
     submission.ai_score = grading["score"]
     submission.status = "AI 已批改"
     submission.ocr_text = ocr_text
@@ -511,6 +517,9 @@ def run_grade_batch(payload: BatchGradeRequest, db: Session = Depends(get_db)) -
         essay_prompt=essay_prompt,
     )
 
+    detected_subject = _detected_subject_from_grading(grading)
+    if detected_subject and _should_apply_detected_subject(submission, subject):
+        submission.subject = detected_subject
     submission.ai_score = grading["score"]
     submission.status = "AI 已批改"
     submission.ocr_text = ocr_text
@@ -537,6 +546,14 @@ def list_submissions(db: Session = Depends(get_db)) -> dict:
 def get_submission_detail(submission_id: int, db: Session = Depends(get_db)) -> dict:
     submission = _get_submission(db, submission_id)
     return {"data": _submission_to_dict(submission, detail=True)}
+
+
+@app.delete("/api/submissions/{submission_id}", dependencies=[Depends(require_api_token)])
+def delete_submission(submission_id: int, db: Session = Depends(get_db)) -> dict:
+    submission = _get_submission(db, submission_id)
+    db.delete(submission)
+    db.commit()
+    return {"data": {"deleted": True, "submission_id": submission_id}}
 
 
 @app.put("/api/submissions/{submission_id}/review")
@@ -929,6 +946,53 @@ def _pydantic_dict(model) -> dict:
     return model.dict()
 
 
+def _should_apply_detected_subject(submission: Submission, requested_subject: str | None = None) -> bool:
+    values = [submission.subject, requested_subject or "", submission.assignment.subject if submission.assignment else ""]
+    return any(value in AUTO_SUBJECT_VALUES for value in values)
+
+
+def _detected_subject_from_grading(grading: dict) -> str:
+    metadata = grading.get("ai_metadata") if isinstance(grading, dict) else {}
+    return _detected_subject_from_metadata(metadata if isinstance(metadata, dict) else {}) or _known_subject(grading.get("subject"))
+
+
+def _detected_subject_from_metadata(metadata: dict) -> str:
+    answer_sheet = metadata.get("answer_sheet") if isinstance(metadata, dict) else None
+    if not isinstance(answer_sheet, dict):
+        return ""
+
+    subject = _known_subject(answer_sheet.get("detected_subject"))
+    if subject:
+        return subject
+
+    subject = _dominant_subject(answer_sheet.get("detected_subjects"))
+    if subject:
+        return subject
+
+    questions = answer_sheet.get("questions") or []
+    subjects = [
+        _known_subject(question.get("subject"))
+        for question in questions
+        if isinstance(question, dict)
+    ]
+    return _dominant_subject([subject for subject in subjects if subject])
+
+
+def _known_subject(value) -> str:
+    text = str(value or "").strip()
+    return text if text in CORE_SUBJECTS else ""
+
+
+def _dominant_subject(values) -> str:
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return ""
+    counter = Counter(_known_subject(value) for value in values)
+    counter.pop("", None)
+    return counter.most_common(1)[0][0] if counter else ""
+
+
 def _resolve_assignment(db: Session, payload: UploadRequest) -> Assignment:
     if payload.assignment_id:
         assignment = db.get(Assignment, payload.assignment_id)
@@ -1177,6 +1241,7 @@ def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
     assignment = submission.assignment
     result = submission.grading_result
     answer_sheet = (result.ai_metadata or {}).get("answer_sheet") if result and isinstance(result.ai_metadata, dict) else None
+    detected_subject = _detected_subject_from_metadata(result.ai_metadata) if result and isinstance(result.ai_metadata, dict) else ""
     grading_full_score = (
         answer_sheet.get("full_score")
         if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None
@@ -1187,6 +1252,7 @@ def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
         "student": _user_to_dict(submission.student),
         "assignment": _assignment_to_dict(assignment),
         "subject": submission.subject,
+        "detected_subject": detected_subject,
         "question_type": submission.question_type,
         "image_url": submission.image_url,
         "image_name": submission.image_name,

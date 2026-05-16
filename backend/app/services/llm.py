@@ -482,6 +482,10 @@ def normalize_llm_grading(raw: dict[str, Any], rule_result: dict[str, Any], subj
 
 def normalize_answer_sheet_grading(raw: dict[str, Any], provider: str, model: str) -> dict[str, Any]:
     questions = raw.get("questions") if isinstance(raw.get("questions"), list) else []
+    detected_subjects = _list(raw.get("detected_subjects"), [])
+    detected_subject = _dominant_core_subject(
+        detected_subjects + [question.get("subject") for question in questions if isinstance(question, dict)]
+    )
     score = _number(raw.get("score"), sum(_number(q.get("score"), 0) for q in questions if isinstance(q, dict)))
     full_score = _number(raw.get("full_score"), sum(_number(q.get("full_score"), 0) for q in questions if isinstance(q, dict)) or 100)
     mistakes: list[dict[str, Any]] = []
@@ -519,7 +523,7 @@ def normalize_answer_sheet_grading(raw: dict[str, Any], provider: str, model: st
     is_correct = _bool(raw.get("is_correct"), full_score > 0 and score >= full_score)
 
     return {
-        "subject": "自动识别",
+        "subject": detected_subject or "自动识别",
         "score": score,
         "full_score": full_score,
         "is_correct": is_correct,
@@ -542,7 +546,8 @@ def normalize_answer_sheet_grading(raw: dict[str, Any], provider: str, model: st
             "llm_provider": provider,
             "llm_model": model,
             "answer_sheet": {
-                "detected_subjects": _list(raw.get("detected_subjects"), []),
+                "detected_subject": detected_subject,
+                "detected_subjects": detected_subjects,
                 "score": score,
                 "full_score": full_score,
                 "warnings": _list(raw.get("warnings"), []),
@@ -636,6 +641,16 @@ def _list(value: Any, default: list) -> list:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return default
+
+
+def _dominant_core_subject(values: list[Any]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        subject = str(value or "").strip()
+        if subject not in {"数学", "英语", "语文"}:
+            continue
+        counts[subject] = counts.get(subject, 0) + 1
+    return max(counts.items(), key=lambda item: item[1])[0] if counts else ""
 
 
 def unique_list(values: list[str]) -> list[str]:

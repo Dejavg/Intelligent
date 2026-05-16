@@ -32,6 +32,8 @@ def cleanup_demo_rows():
             db.delete(submission)
         for submission in db.query(Submission).filter(Submission.image_name == "pytest-objective.png").all():
             db.delete(submission)
+        for submission in db.query(Submission).filter(Submission.image_name == "pytest-auto-subject.png").all():
+            db.delete(submission)
         db.commit()
 
 
@@ -424,6 +426,52 @@ x=4
         self.assertEqual(data["submission"]["question_type"], "作文")
         self.assertEqual(result["full_score"], 60)
         self.assertIn("composition_dimensions", result["ai_metadata"])
+
+    def test_auto_detected_subject_updates_submission_analysis_and_delete(self):
+        old_llm_enabled = settings.llm_enabled
+        object.__setattr__(settings, "llm_enabled", False)
+        try:
+            assignments = self.client.get("/api/assignments").json()["data"]
+            assignment = next(item for item in assignments if item["subject"] == "自动识别")
+            upload = self.client.post(
+                "/api/upload",
+                json={
+                    "student_id": 1,
+                    "assignment_id": assignment["id"],
+                    "subject": "自动识别",
+                    "question_type": "答题卡",
+                    "image_name": "pytest-auto-subject.png",
+                    "image_data": VALID_1X1_PNG,
+                },
+            )
+            self.assertEqual(upload.status_code, 200)
+            submission_id = upload.json()["data"]["submission_id"]
+
+            grade = self.client.post(
+                "/api/grade",
+                json={
+                    "submission_id": submission_id,
+                    "subject": "自动识别",
+                    "question_type": "答题卡",
+                    "ocr_text": "1. 计算：36 ÷ 4 + 5 × 2\n36 ÷ 4 = 9\n5 × 2 = 10\n9 + 10 = 19\n答：19",
+                },
+            )
+            self.assertEqual(grade.status_code, 200)
+            submission = grade.json()["data"]["submission"]
+            self.assertEqual(submission["subject"], "数学")
+            self.assertEqual(submission["detected_subject"], "数学")
+
+            analysis = self.client.get("/api/classes/%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD/analysis")
+            self.assertEqual(analysis.status_code, 200)
+            math_section = next(item for item in analysis.json()["data"]["subject_analysis"] if item["subject"] == "数学")
+            self.assertGreaterEqual(math_section["total_submissions"], 1)
+
+            deleted = self.client.delete(f"/api/submissions/{submission_id}")
+            self.assertEqual(deleted.status_code, 200)
+            self.assertTrue(deleted.json()["data"]["deleted"])
+            self.assertEqual(self.client.get(f"/api/submissions/{submission_id}").status_code, 404)
+        finally:
+            object.__setattr__(settings, "llm_enabled", old_llm_enabled)
 
     def test_objective_choice_grading_and_report_fields(self):
         question = self.client.post(

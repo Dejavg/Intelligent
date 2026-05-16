@@ -1174,6 +1174,11 @@ textarea {
   background: var(--amber);
 }
 
+.btn.danger {
+  color: #fff;
+  background: var(--red);
+}
+
 .btn:disabled {
   cursor: not-allowed;
   opacity: 0.62;
@@ -1847,9 +1852,15 @@ tr:last-child td {
   font-size: 12px;
 }
 
+.table-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .teacher-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.18fr) minmax(390px, 0.82fr);
+  grid-template-columns: 1fr;
   gap: 20px;
   align-items: start;
 }
@@ -1911,10 +1922,17 @@ tr:last-child td {
 
 .teacher-detail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
   gap: 16px;
   align-self: start;
-  position: sticky;
-  top: 92px;
+  position: static;
+}
+
+.teacher-detail-main,
+.teacher-detail-side {
+  display: grid;
+  gap: 16px;
+  align-self: start;
 }
 
 .review-grid {
@@ -2018,6 +2036,37 @@ tr:last-child td {
   margin: 0;
   color: var(--muted);
   line-height: 1.7;
+}
+
+.recognized-answer-panel {
+  position: sticky;
+  top: 92px;
+  display: grid;
+  gap: 14px;
+}
+
+.recognized-answer-list {
+  display: grid;
+  gap: 12px;
+  max-height: min(720px, 72vh);
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.recognized-answer-item {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.recognized-answer-item .answer-box {
+  max-height: 220px;
+  overflow: auto;
+  scrollbar-width: thin;
 }
 
 .teacher-ai-list {
@@ -2571,6 +2620,7 @@ tr:last-child td {
   .upload-grid,
   .result-grid,
   .teacher-layout,
+  .teacher-detail,
   .review-grid,
   .ocr-test-grid,
   .review-question-body,
@@ -2616,6 +2666,10 @@ tr:last-child td {
   }
 
   .teacher-detail {
+    position: static;
+  }
+
+  .recognized-answer-panel {
     position: static;
   }
 
