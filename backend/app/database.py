@@ -48,6 +48,7 @@ def _ensure_sqlite_columns() -> None:
             "batch_id": "VARCHAR(80)",
             "pages": "JSON DEFAULT '[]'",
             "essay_prompt": "TEXT",
+            "essay_full_score": "FLOAT",
         },
         "grading_results": {
             "ai_engine": "VARCHAR(120)",

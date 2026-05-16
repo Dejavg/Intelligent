@@ -4,6 +4,7 @@ import ast
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from ..models import Assignment
 from ..settings import settings
@@ -22,26 +23,36 @@ class GradingService:
         assignment: Assignment,
         image_path: Path | None = None,
         essay_prompt: str = "",
+        essay_full_score: float | None = None,
     ) -> dict:
         if self._is_answer_sheet(subject, question_type, assignment):
-            return self._grade_answer_sheet(ocr_text, assignment, image_path)
+            return _cap_score_to_full_score(self._grade_answer_sheet(ocr_text, assignment, image_path))
 
         if not ocr_text.strip() and not (settings.llm_enabled and settings.llm_grade_from_image and image_path):
-            return self._empty_result(subject, assignment)
+            return _cap_score_to_full_score(self._empty_result(subject, assignment))
 
-        rule_result = self._grade_by_rule(subject, question_type, ocr_text, assignment, essay_prompt=essay_prompt)
+        grading_assignment = assignment
+        composition_full_score = None
+        if self._is_composition(subject, question_type):
+            composition_full_score = _resolve_composition_full_score(ocr_text, assignment.full_score, essay_full_score)
+            grading_assignment = _assignment_with_full_score(assignment, composition_full_score["value"])
+
+        rule_result = self._grade_by_rule(subject, question_type, ocr_text, grading_assignment, essay_prompt=essay_prompt)
         rule_result.setdefault("ai_engine", "RuleEngine")
         if essay_prompt:
             rule_result.setdefault("ai_metadata", {})
             rule_result["ai_metadata"]["essay_prompt"] = essay_prompt
+        if composition_full_score:
+            _attach_composition_full_score(rule_result, composition_full_score)
+            rule_result = _cap_score_to_full_score(rule_result)
         if (rule_result.get("ai_metadata") or {}).get("objective_grading"):
-            return rule_result
+            return _cap_score_to_full_score(rule_result)
         if settings.llm_enabled:
             try:
                 if image_path and settings.llm_grade_from_image and self.llm_client.vision_available:
-                    llm_result = self.llm_client.grade_image(image_path, subject, question_type, ocr_text, assignment, essay_prompt=essay_prompt)
+                    llm_result = self.llm_client.grade_image(image_path, subject, question_type, ocr_text, grading_assignment, essay_prompt=essay_prompt)
                 else:
-                    llm_result = self.llm_client.grade(subject, question_type, ocr_text, assignment, essay_prompt=essay_prompt)
+                    llm_result = self.llm_client.grade(subject, question_type, ocr_text, grading_assignment, essay_prompt=essay_prompt)
                 llm_grading = normalize_llm_grading(llm_result.data, rule_result, subject)
                 llm_grading["ai_engine"] = f"LLM:{llm_result.provider}:{llm_result.model}"
                 llm_grading["ai_metadata"] = {
@@ -50,13 +61,15 @@ class GradingService:
                     "llm_model": llm_result.model,
                     "essay_prompt": essay_prompt,
                 }
-                return llm_grading
+                if composition_full_score:
+                    _attach_composition_full_score(llm_grading, composition_full_score)
+                return _cap_score_to_full_score(llm_grading)
             except Exception as exc:
                 if not settings.llm_fallback_to_rule:
                     raise
                 rule_result["ai_engine_note"] = f"LLM fallback: {exc}"
                 rule_result["ai_metadata"] = {**(rule_result.get("ai_metadata") or {}), "llm_fallback_reason": str(exc)}
-        return rule_result
+        return _cap_score_to_full_score(rule_result)
 
     def grade_batch(
         self,
@@ -67,16 +80,25 @@ class GradingService:
         assignment: Assignment,
         page_results: list[dict] | None = None,
         essay_prompt: str = "",
+        essay_full_score: float | None = None,
     ) -> dict:
         if self._is_composition(subject, question_type):
             body = _composition_body_from_batch(merged_ocr_text, questions)
-            return self.grade(subject, question_type, body, assignment, essay_prompt=essay_prompt)
+            full_score_context = "\n".join(part for part in [merged_ocr_text, body] if part.strip())
+            return self.grade(
+                subject,
+                question_type,
+                full_score_context or body,
+                assignment,
+                essay_prompt=essay_prompt,
+                essay_full_score=essay_full_score,
+            )
 
         if _is_fixed_demo_questions(questions):
             paper = {"subject": "数学", "paper_title": "数学练习卷", "demo_fixed": True, "questions": questions}
             result = _grade_demo_math_paper(paper)
             result["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
-            return result
+            return _cap_score_to_full_score(result)
 
         answer_sheet_text = _questions_to_answer_sheet_text(questions, merged_ocr_text)
         errors: list[str] = []
@@ -92,17 +114,17 @@ class GradingService:
                 )
                 result = normalize_answer_sheet_grading(llm_result.data, llm_result.provider, llm_result.model)
                 result["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
-                return result
+                return _cap_score_to_full_score(result)
             except Exception as exc:
                 errors.append(f"多图合并文本批改失败：{exc}")
 
         fallback = self._grade_answer_sheet_from_text(answer_sheet_text, assignment, errors or ["已根据多图 OCR 合并文本启用本地规则批改。"])
         if fallback:
             fallback["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
-            return fallback
+            return _cap_score_to_full_score(fallback)
         result = self._grading_failed_result(assignment, answer_sheet_text, errors or ["多图合并后未能形成可靠批改结果"])
         result["ai_metadata"]["batch_merge"] = _batch_merge_metadata(page_results or [], questions)
-        return result
+        return _cap_score_to_full_score(result)
 
     def _grade_answer_sheet(self, ocr_text: str, assignment: Assignment, image_path: Path | None) -> dict:
         if not image_path and not ocr_text.strip():
@@ -373,7 +395,8 @@ class GradingService:
 
         grammar = max(grammar, 1)
         structure = max(structure, 1)
-        score = content + grammar + vocabulary + structure + spelling
+        raw_score = content + grammar + vocabulary + structure + spelling
+        score = _clean_number(min(full_score, raw_score / 20 * full_score))
         is_correct = score >= full_score * 0.9
 
         if not errors:
@@ -441,7 +464,8 @@ class GradingService:
         language = 4
         theme = 4 if any(word in text for word in ["校园", "活动", "运动会", "同学"]) else 2
         writing = 3
-        score = content + structure + language + theme + writing
+        raw_score = content + structure + language + theme + writing
+        score = _clean_number(min(full_score, raw_score / 20 * full_score))
         weak_points = [] if score >= 17 else ["细节描写", "原因阐述"]
 
         return {
@@ -551,6 +575,100 @@ class GradingService:
                 },
             },
         }
+
+
+def _assignment_with_full_score(assignment: Assignment, full_score: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=getattr(assignment, "id", None),
+        title=assignment.title,
+        subject=assignment.subject,
+        question_type=assignment.question_type,
+        question=assignment.question,
+        standard_answer=assignment.standard_answer,
+        full_score=full_score,
+        knowledge_points=assignment.knowledge_points or [],
+    )
+
+
+def _resolve_composition_full_score(text: str, default_full_score: float, manual_full_score: float | None = None) -> dict:
+    manual = _positive_number(manual_full_score)
+    if manual is not None:
+        return {"value": manual, "source": "manual", "source_label": "手动输入"}
+
+    detected = _extract_composition_full_score(text)
+    if detected is not None:
+        return {"value": detected, "source": "ocr", "source_label": "OCR识别"}
+
+    return {"value": _positive_number(default_full_score) or 0, "source": "assignment", "source_label": "题库默认"}
+
+
+def _attach_composition_full_score(result: dict, resolution: dict) -> None:
+    result["full_score"] = resolution["value"]
+    metadata = result.setdefault("ai_metadata", {})
+    metadata["composition_full_score"] = resolution
+    metadata["resolved_full_score"] = resolution["value"]
+    metadata["resolved_full_score_source"] = resolution["source"]
+
+
+def _cap_score_to_full_score(result: dict) -> dict:
+    score = _positive_number(result.get("score"))
+    full_score = _positive_number(result.get("full_score"))
+    if score is None or full_score is None:
+        return result
+    if score > full_score:
+        metadata = result.setdefault("ai_metadata", {})
+        metadata["original_score_before_cap"] = _clean_number(score)
+        metadata["score_cap_applied"] = True
+        result["score"] = _clean_number(full_score)
+        result["is_correct"] = full_score > 0
+    else:
+        result["score"] = _clean_number(score)
+    result["full_score"] = _clean_number(full_score)
+    return result
+
+
+def _extract_composition_full_score(text: str) -> float | None:
+    if not text:
+        return None
+    normalized = str(text).replace("（", "(").replace("）", ")")
+    patterns = [
+        r"(?:满分|共|总分|分值)\s*[:：]?\s*(\d{1,3}(?:\.\d+)?)\s*分",
+        r"(\d{1,3}(?:\.\d+)?)\s*(?:分|points?|pts?)",
+    ]
+    candidates: list[dict] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            value = _positive_number(match.group(1))
+            if value is None or value > 150:
+                continue
+            start, end = match.span()
+            before = normalized[max(0, start - 80):start]
+            after = normalized[end:min(len(normalized), end + 50)]
+            window = f"{before}{match.group(0)}{after}".lower()
+            keyword_score = 0
+            if re.search(r"读后续写|书面表达|应用文|作文|习作|写作|composition|essay|writing", window, flags=re.IGNORECASE):
+                keyword_score += 3
+            if re.search(r"共\s*两\s*节|总计|整卷|全卷|全试卷|总分", window):
+                keyword_score -= 2
+            candidates.append({"value": value, "score": keyword_score, "index": start})
+
+    if not candidates:
+        return None
+    strong = [item for item in candidates if item["score"] > 0]
+    if strong:
+        return _clean_number(sorted(strong, key=lambda item: (item["score"], item["index"]), reverse=True)[0]["value"])
+    unique_values = {item["value"] for item in candidates}
+    if len(unique_values) == 1:
+        return _clean_number(candidates[0]["value"])
+    return None
+
+
+def _positive_number(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _is_fixed_demo_questions(questions: list[dict]) -> bool:

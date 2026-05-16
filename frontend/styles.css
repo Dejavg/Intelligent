@@ -1998,6 +1998,16 @@ tr:last-child td {
   border-radius: 16px;
 }
 
+.score-source-note {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  color: #315072;
+  font-weight: 800;
+  background: #eef5ff;
+  border: 1px solid #d7e6ff;
+  border-radius: 8px;
+}
+
 .review-score-strip div {
   min-width: 0;
   padding: 13px;

@@ -11,6 +11,7 @@ class UploadRequest(BaseModel):
     image_name: str = ""
     image_data: str = Field("", description="Data URL or base64 encoded image content.")
     essay_prompt: str = ""
+    essay_full_score: Optional[float] = Field(default=None, gt=0)
 
 
 class BatchImageItem(BaseModel):
@@ -25,6 +26,7 @@ class BatchUploadRequest(BaseModel):
     question_type: str
     assignment_id: Optional[int] = None
     essay_prompt: str = ""
+    essay_full_score: Optional[float] = Field(default=None, gt=0)
     images: list[BatchImageItem]
 
 
@@ -53,6 +55,7 @@ class BatchGradeRequest(BaseModel):
     questions: list[dict] = Field(default_factory=list)
     page_results: list[dict] = Field(default_factory=list)
     essay_prompt: str = ""
+    essay_full_score: Optional[float] = Field(default=None, gt=0)
 
 
 class AssignmentCreateRequest(BaseModel):
@@ -106,6 +109,7 @@ class GradeRequest(BaseModel):
     question_type: Optional[str] = None
     ocr_text: Optional[str] = None
     essay_prompt: Optional[str] = None
+    essay_full_score: Optional[float] = Field(default=None, gt=0)
 
 
 class ReviewRequest(BaseModel):

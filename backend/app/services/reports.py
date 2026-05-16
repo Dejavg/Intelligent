@@ -33,7 +33,7 @@ class ReportService:
             result = submission.grading_result
             score = _effective_score(submission)
             total_score += score
-            total_full_score += assignment.full_score
+            total_full_score += _submission_full_score(submission)
             if result:
                 weak_counter.update(result.weak_points or [])
                 knowledge_counter.update(result.knowledge_points or [])
@@ -78,7 +78,7 @@ class ReportService:
         submissions = db.query(Submission).filter(Submission.student_id.in_(student_ids)).all() if student_ids else []
 
         scores = [_effective_score(submission) for submission in submissions]
-        full_scores = [submission.assignment.full_score for submission in submissions]
+        full_scores = [_submission_full_score(submission) for submission in submissions]
         average_score = round(sum(scores) / len(scores), 1) if scores else 0
         highest_score = round(max(scores), 1) if scores else 0
         lowest_score = round(min(scores), 1) if scores else 0
@@ -103,7 +103,7 @@ class ReportService:
             bucket = student_buckets.get(submission.student_id)
             if bucket:
                 bucket["score"] += _effective_score(submission)
-                bucket["full_score"] += float(assignment.full_score or 0)
+                bucket["full_score"] += _submission_full_score(submission)
                 bucket["submissions"] += 1
             stat = question_stat[assignment.title]
             stat["total"] += 1
@@ -162,7 +162,7 @@ def _subject_analysis(submissions: list[Submission]) -> list[dict]:
     for subject in SUBJECT_SCORE_SECTIONS:
         subject_submissions = [submission for submission in submissions if _analysis_subject(submission) == subject]
         scores = [_effective_score(submission) for submission in subject_submissions]
-        full_scores = [float(submission.assignment.full_score or 0) for submission in subject_submissions]
+        full_scores = [_submission_full_score(submission) for submission in subject_submissions]
         full_total = sum(full_scores)
         correct_count = sum(1 for submission in subject_submissions if submission.grading_result and submission.grading_result.is_correct)
         rows.append(
@@ -212,10 +212,26 @@ def _analysis_subject(submission: Submission) -> str:
 
 def _effective_score(submission: Submission) -> float:
     if submission.teacher_score is not None:
-        return float(submission.teacher_score)
+        return min(float(submission.teacher_score), _submission_full_score(submission))
     if submission.ai_score is not None:
-        return float(submission.ai_score)
+        return min(float(submission.ai_score), _submission_full_score(submission))
     return 0.0
+
+
+def _submission_full_score(submission: Submission) -> float:
+    result = submission.grading_result
+    metadata = result.ai_metadata if result and isinstance(result.ai_metadata, dict) else {}
+    answer_sheet = metadata.get("answer_sheet") if isinstance(metadata, dict) else None
+    if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None:
+        return float(answer_sheet.get("full_score") or 0)
+    composition_full_score = metadata.get("composition_full_score") if isinstance(metadata, dict) else None
+    if isinstance(composition_full_score, dict) and composition_full_score.get("value") is not None:
+        return float(composition_full_score.get("value") or 0)
+    if isinstance(metadata, dict) and metadata.get("resolved_full_score") is not None:
+        return float(metadata.get("resolved_full_score") or 0)
+    if submission.essay_full_score is not None:
+        return float(submission.essay_full_score)
+    return float(submission.assignment.full_score or 0)
 
 
 def _submission_summary(submission: Submission) -> dict:
@@ -237,8 +253,8 @@ def _submission_summary(submission: Submission) -> dict:
         "ai_score": submission.ai_score,
         "teacher_score": submission.teacher_score,
         "effective_score": _effective_score(submission),
-        "full_score": assignment.full_score,
-        "score_rate": _score_rate(_effective_score(submission), assignment.full_score),
+        "full_score": _submission_full_score(submission),
+        "score_rate": _score_rate(_effective_score(submission), _submission_full_score(submission)),
         "is_correct": result.is_correct if result else False,
         "weak_points": result.weak_points if result else [],
         "comment": result.comment if result else "",
@@ -255,8 +271,8 @@ def _score_trend(submissions: list[Submission]) -> list[dict]:
             "assignment_title": submission.assignment.title,
             "created_at": submission.created_at.isoformat() if submission.created_at else "",
             "score": round(_effective_score(submission), 1),
-            "full_score": submission.assignment.full_score,
-            "score_rate": _score_rate(_effective_score(submission), submission.assignment.full_score),
+            "full_score": _submission_full_score(submission),
+            "score_rate": _score_rate(_effective_score(submission), _submission_full_score(submission)),
         }
         for submission in ordered
     ]

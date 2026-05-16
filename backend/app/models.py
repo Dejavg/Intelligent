@@ -56,6 +56,7 @@ class Submission(Base):
     batch_id = Column(String(80), nullable=True, index=True)
     pages = Column(JSON, nullable=False, default=list)
     essay_prompt = Column(Text, nullable=True)
+    essay_full_score = Column(Float, nullable=True)
     ocr_text = Column(Text, nullable=True)
     ocr_engine = Column(String(80), nullable=True)
     ocr_confidence = Column(Float, nullable=True)

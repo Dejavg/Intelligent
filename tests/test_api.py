@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from backend.app.database import SessionLocal, UPLOAD_DIR, init_db
 from backend.app.main import app
 from backend.app.models import Assignment, ClassRoom, Submission
-from backend.app.services.llm import normalize_answer_sheet_grading
+from backend.app.services.grading import GradingService
+from backend.app.services.llm import LLMResult, normalize_answer_sheet_grading
 from backend.app.settings import settings
 
 
@@ -367,6 +368,7 @@ x=4
                 "image_name": "pytest-essay.png",
                 "image_data": VALID_1X1_PNG,
                 "essay_prompt": essay_prompt,
+                "essay_full_score": 25,
             },
         )
         self.assertEqual(upload.status_code, 200)
@@ -377,14 +379,113 @@ x=4
                 "submission_id": submission_id,
                 "subject": "英语",
                 "question_type": "作文",
-                "ocr_text": "I go to park with my friend. We play football. I very happy.",
+                "ocr_text": "Writing task: 30 points. I go to park with my friend. We play football. I very happy.",
                 "essay_prompt": essay_prompt,
+                "essay_full_score": 25,
             },
         )
         self.assertEqual(grade.status_code, 200)
         detail = self.client.get(f"/api/submissions/{submission_id}").json()["data"]
         self.assertEqual(detail["essay_prompt"], essay_prompt)
+        self.assertEqual(detail["essay_full_score"], 25)
+        self.assertEqual(detail["grading_result"]["full_score"], 25)
+        self.assertLessEqual(detail["grading_result"]["score"], 25)
         self.assertEqual(detail["grading_result"]["ai_metadata"]["essay_prompt"], essay_prompt)
+        self.assertEqual(detail["grading_result"]["ai_metadata"]["composition_full_score"]["source"], "manual")
+
+    def test_composition_ocr_full_score_and_score_cap(self):
+        class FakeLLMClient:
+            available = True
+            vision_available = False
+
+            def grade(self, *args, **kwargs):
+                return LLMResult(
+                    data={
+                        "score": 31,
+                        "full_score": 25,
+                        "is_correct": True,
+                        "content_analysis": "内容完整。",
+                        "comment": "表达清楚。",
+                    },
+                    raw_text="{}",
+                    provider="fake",
+                    model="fake-composition",
+                )
+
+        old_llm_enabled = settings.llm_enabled
+        object.__setattr__(settings, "llm_enabled", True)
+        try:
+            service = GradingService(FakeLLMClient())
+            assignment = Assignment(
+                title="Weekend Writing",
+                subject="英语",
+                question_type="作文",
+                question="Write a passage.",
+                standard_answer="",
+                full_score=20,
+                knowledge_points=["写作"],
+            )
+            result = service.grade(
+                "英语",
+                "作文",
+                "第二节 读后续写（满分25分） Dear Tom, I am happy to hear from you.",
+                assignment,
+            )
+        finally:
+            object.__setattr__(settings, "llm_enabled", old_llm_enabled)
+
+        self.assertEqual(result["full_score"], 25)
+        self.assertEqual(result["score"], 25)
+        self.assertEqual(result["ai_metadata"]["composition_full_score"]["source"], "ocr")
+        self.assertEqual(result["ai_metadata"]["original_score_before_cap"], 31)
+        self.assertTrue(result["ai_metadata"]["score_cap_applied"])
+
+    def test_manual_composition_full_score_overrides_llm_full_score(self):
+        class FakeLLMClient:
+            available = True
+            vision_available = False
+
+            def grade(self, *args, **kwargs):
+                return LLMResult(
+                    data={
+                        "score": 43,
+                        "full_score": 48,
+                        "is_correct": False,
+                        "content_analysis": "内容较完整。",
+                        "comment": "表达清楚。",
+                    },
+                    raw_text="{}",
+                    provider="fake",
+                    model="fake-composition",
+                )
+
+        old_llm_enabled = settings.llm_enabled
+        object.__setattr__(settings, "llm_enabled", True)
+        try:
+            service = GradingService(FakeLLMClient())
+            assignment = Assignment(
+                title="语文作文智能批改",
+                subject="语文",
+                question_type="作文",
+                question="请上传语文作文图片。",
+                standard_answer="",
+                full_score=60,
+                knowledge_points=["审题立意"],
+            )
+            result = service.grade(
+                "语文",
+                "作文",
+                "三、作文（50分） 请以“发现身边的美”为题作文。",
+                assignment,
+                essay_full_score=50,
+            )
+        finally:
+            object.__setattr__(settings, "llm_enabled", old_llm_enabled)
+
+        self.assertEqual(result["score"], 43)
+        self.assertEqual(result["full_score"], 50)
+        self.assertEqual(result["ai_metadata"]["composition_full_score"]["value"], 50)
+        self.assertEqual(result["ai_metadata"]["composition_full_score"]["source"], "manual")
 
     def test_chinese_composition_type_is_available_and_gradable(self):
         assignments = self.client.get("/api/assignments").json()["data"]

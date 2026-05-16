@@ -449,6 +449,11 @@ function compositionPromptMarkup(subject, type) {
       <textarea id="essayPrompt" name="essay_prompt" placeholder="${escapeHtml(placeholder)}"></textarea>
       <small>建议填写作文题目，以便 AI 判断是否切题；留空时系统会提示切题判断可能不完整。</small>
     </div>
+    <div class="field essay-score-field">
+      <label for="essayFullScore">作文满分（可留空）</label>
+      <input id="essayFullScore" name="essay_full_score" type="text" inputmode="decimal" autocomplete="off" placeholder="${subject === "英语" ? "如 20、25、30" : "如 40、50、60"}" />
+      <small>优先使用这里填写的满分；留空时系统会尝试从 OCR 文本识别“满分 xx 分”，再使用题库默认满分。</small>
+    </div>
   `;
 }
 
@@ -570,6 +575,31 @@ function clearSelectedFiles() {
   state.selectedPreview = "";
 }
 
+function readEssayFullScore(form = document) {
+  const input = form.querySelector("#essayFullScore");
+  if (!input) return null;
+  const raw = input.value.trim().replace(/，/g, ".").replace(/。/g, ".");
+  if (!raw) return null;
+  if (!/^\d+(\.\d+)?$/.test(raw)) {
+    showToast("作文满分只需要填写数字，例如 50；也可以留空由系统自动识别。");
+    input.focus();
+    return false;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0 || value > 150) {
+    showToast("作文满分请输入 1 到 150 之间的数字，或留空由系统自动识别。");
+    input.focus();
+    return false;
+  }
+  return value;
+}
+
+function confirmEssayFullScoreIfNeeded(subject, questionType, essayFullScore) {
+  if (!isCompositionSelection(subject, questionType) || essayFullScore === null) return true;
+  if (subject !== "语文" || essayFullScore >= 30) return true;
+  return window.confirm(`当前语文作文满分是 ${formatScore(essayFullScore)} 分，明显低于常见作文分值。确认继续按这个满分批改吗？`);
+}
+
 async function handleGradeSubmit(event) {
   event.preventDefault();
   const button = document.querySelector("#gradeBtn");
@@ -579,6 +609,9 @@ async function handleGradeSubmit(event) {
   const assignment = findAssignment(subject, questionType);
   const studentId = Number(document.querySelector("#studentSelect").value);
   const essayPrompt = document.querySelector("#essayPrompt")?.value?.trim() || "";
+  const essayFullScore = readEssayFullScore(event.currentTarget);
+  if (essayFullScore === false) return;
+  if (!confirmEssayFullScoreIfNeeded(subject, questionType, essayFullScore)) return;
   if (isCompositionSelection(subject, questionType) && !essayPrompt) {
     showToast("建议填写作文题目，以便 AI 判断是否切题。");
   }
@@ -594,7 +627,7 @@ async function handleGradeSubmit(event) {
   status.textContent = "上传中...";
   try {
     if (state.selectedFiles.length > 1) {
-      await submitBatchGradeFlow({ studentId, subject, questionType, assignment, essayPrompt, status });
+      await submitBatchGradeFlow({ studentId, subject, questionType, assignment, essayPrompt, essayFullScore, status });
       return;
     }
     const imageData = state.selectedFile ? await readFileAsDataURL(state.selectedFile) : "";
@@ -608,6 +641,7 @@ async function handleGradeSubmit(event) {
         image_name: state.selectedFile?.name || `mock-${subject}.png`,
         image_data: imageData,
         essay_prompt: essayPrompt,
+        essay_full_score: essayFullScore,
       }),
     });
     updateUploadStep(3);
@@ -621,7 +655,7 @@ async function handleGradeSubmit(event) {
     status.textContent = "AI 批改中...";
     await api("/api/grade", {
       method: "POST",
-      body: JSON.stringify({ submission_id: submissionId, subject, question_type: questionType, essay_prompt: essayPrompt }),
+      body: JSON.stringify({ submission_id: submissionId, subject, question_type: questionType, essay_prompt: essayPrompt, essay_full_score: essayFullScore }),
     });
     state.lastSubmissionId = submissionId;
     updateUploadStep(5);
@@ -637,7 +671,7 @@ async function handleGradeSubmit(event) {
   }
 }
 
-async function submitBatchGradeFlow({ studentId, subject, questionType, assignment, essayPrompt, status }) {
+async function submitBatchGradeFlow({ studentId, subject, questionType, assignment, essayPrompt, essayFullScore, status }) {
   const images = await Promise.all(
     state.selectedFiles.map(async (file, index) => ({
       page_index: index + 1,
@@ -653,6 +687,7 @@ async function submitBatchGradeFlow({ studentId, subject, questionType, assignme
       question_type: questionType,
       assignment_id: assignment?.id,
       essay_prompt: essayPrompt,
+      essay_full_score: essayFullScore,
       images,
     }),
   });
@@ -683,6 +718,7 @@ async function submitBatchGradeFlow({ studentId, subject, questionType, assignme
       questions: ocr.data.questions || [],
       page_results: ocr.data.page_results || [],
       essay_prompt: essayPrompt,
+      essay_full_score: essayFullScore,
     }),
   });
   state.lastSubmissionId = submissionId;
@@ -1101,6 +1137,7 @@ function compositionResultCard(submission) {
         <span class="tag">${escapeHtml(submission.subject)} · ${escapeHtml(submission.question_type)}</span>
       </div>
       <div class="code-box">${escapeHtml(submission.essay_prompt || "未填写作文题目，建议后续补充写作要求以提升切题判断准确性。")}</div>
+      ${compositionFullScoreNotice(result)}
       <h3>OCR 识别出的作文正文</h3>
       <div class="answer-box"><p>${escapeHtml(submission.ocr_text || "暂无作文正文")}</p></div>
       <div class="result-two-col">
@@ -1117,6 +1154,16 @@ function compositionResultCard(submission) {
       ${result.revised_example ? `<h3>修改示例</h3><div class="code-box">${escapeHtml(result.revised_example)}</div>` : ""}
     </div>
   `;
+}
+
+function compositionFullScoreNotice(result = {}) {
+  const meta = result.ai_metadata?.composition_full_score;
+  if (!meta?.value) return "";
+  const sourceLabel = meta.source_label || ({ manual: "手动输入", ocr: "OCR识别", assignment: "题库默认" }[meta.source] || "系统确定");
+  const capped = result.ai_metadata?.score_cap_applied
+    ? `；AI 原始分 ${escapeHtml(formatScore(result.ai_metadata.original_score_before_cap))} 已按满分封顶`
+    : "";
+  return `<p class="score-source-note">作文满分：${escapeHtml(formatScore(meta.value))} 分 · 来源：${escapeHtml(sourceLabel)}${capped}</p>`;
 }
 
 function presentationGuide(submission) {

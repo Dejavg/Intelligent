@@ -244,6 +244,7 @@ def upload_homework(
         image_name=payload.image_name,
         pages=[],
         essay_prompt=payload.essay_prompt.strip(),
+        essay_full_score=payload.essay_full_score,
         status="待批改",
     )
     db.add(submission)
@@ -303,6 +304,7 @@ def upload_homework_batch(
         batch_id=batch_id,
         pages=pages,
         essay_prompt=payload.essay_prompt.strip(),
+        essay_full_score=payload.essay_full_score,
         status="待批改",
     )
     db.add(submission)
@@ -461,6 +463,9 @@ def run_grade(payload: GradeRequest, db: Session = Depends(get_db)) -> dict:
     essay_prompt = (payload.essay_prompt if payload.essay_prompt is not None else submission.essay_prompt) or ""
     if payload.essay_prompt is not None:
         submission.essay_prompt = essay_prompt.strip()
+    essay_full_score = payload.essay_full_score if payload.essay_full_score is not None else submission.essay_full_score
+    if payload.essay_full_score is not None:
+        submission.essay_full_score = payload.essay_full_score
     grading = grading_service.grade(
         subject,
         question_type,
@@ -468,6 +473,7 @@ def run_grade(payload: GradeRequest, db: Session = Depends(get_db)) -> dict:
         submission.assignment,
         image_path=_submission_image_path(submission),
         essay_prompt=essay_prompt,
+        essay_full_score=essay_full_score,
     )
 
     detected_subject = _detected_subject_from_grading(grading)
@@ -496,6 +502,9 @@ def run_grade_batch(payload: BatchGradeRequest, db: Session = Depends(get_db)) -
     essay_prompt = (payload.essay_prompt or submission.essay_prompt or "").strip()
     if essay_prompt:
         submission.essay_prompt = essay_prompt
+    essay_full_score = payload.essay_full_score if payload.essay_full_score is not None else submission.essay_full_score
+    if payload.essay_full_score is not None:
+        submission.essay_full_score = payload.essay_full_score
 
     merged_payload = {
         "batch_id": payload.batch_id,
@@ -505,6 +514,7 @@ def run_grade_batch(payload: BatchGradeRequest, db: Session = Depends(get_db)) -
         "merged_ocr_text": payload.merged_ocr_text,
         "questions": payload.questions,
         "essay_prompt": essay_prompt,
+        "essay_full_score": essay_full_score,
     }
     ocr_text = json_dumps_utf8(merged_payload)
     grading = grading_service.grade_batch(
@@ -515,6 +525,7 @@ def run_grade_batch(payload: BatchGradeRequest, db: Session = Depends(get_db)) -
         assignment=submission.assignment,
         page_results=payload.page_results,
         essay_prompt=essay_prompt,
+        essay_full_score=essay_full_score,
     )
 
     detected_subject = _detected_subject_from_grading(grading)
@@ -569,7 +580,7 @@ def review_submission(
         raise HTTPException(status_code=400, detail="该提交尚未完成 AI 批改")
 
     if payload.teacher_score is not None:
-        if payload.teacher_score < 0 or payload.teacher_score > submission.assignment.full_score:
+        if payload.teacher_score < 0 or payload.teacher_score > _submission_effective_full_score(submission):
             raise HTTPException(status_code=400, detail="教师分数超出满分范围")
         submission.teacher_score = payload.teacher_score
 
@@ -1206,15 +1217,17 @@ def _grading_to_dict(result: GradingResult | None) -> dict | None:
     if not result:
         return None
     submission = result.submission
-    answer_sheet = (result.ai_metadata or {}).get("answer_sheet") if isinstance(result.ai_metadata, dict) else None
-    result_full_score = answer_sheet.get("full_score") if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None else None
+    result_full_score = _grading_result_full_score(result)
+    full_score = result_full_score if result_full_score is not None else (submission.assignment.full_score if submission and submission.assignment else None)
+    ai_score = _cap_score_value(submission.ai_score if submission else None, full_score)
+    teacher_score = _cap_score_value(submission.teacher_score if submission else None, full_score)
     return {
         "id": result.id,
         "submission_id": result.submission_id,
-        "score": submission.teacher_score if submission and submission.teacher_score is not None else (submission.ai_score if submission else None),
-        "ai_score": submission.ai_score if submission else None,
-        "teacher_score": submission.teacher_score if submission else None,
-        "full_score": result_full_score if result_full_score is not None else (submission.assignment.full_score if submission and submission.assignment else None),
+        "score": teacher_score if teacher_score is not None else ai_score,
+        "ai_score": ai_score,
+        "teacher_score": teacher_score,
+        "full_score": full_score,
         "is_correct": result.is_correct,
         "process_analysis": result.process_analysis,
         "content_analysis": result.content_analysis,
@@ -1237,16 +1250,50 @@ def _grading_to_dict(result: GradingResult | None) -> dict | None:
     }
 
 
+def _grading_result_full_score(result: GradingResult | None):
+    if not result or not isinstance(result.ai_metadata, dict):
+        return None
+    answer_sheet = result.ai_metadata.get("answer_sheet")
+    if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None:
+        return answer_sheet.get("full_score")
+    composition_full_score = result.ai_metadata.get("composition_full_score")
+    if isinstance(composition_full_score, dict) and composition_full_score.get("value") is not None:
+        return composition_full_score.get("value")
+    if result.ai_metadata.get("resolved_full_score") is not None:
+        return result.ai_metadata.get("resolved_full_score")
+    return None
+
+
+def _submission_effective_full_score(submission: Submission) -> float:
+    result_full_score = _grading_result_full_score(submission.grading_result)
+    if result_full_score is not None:
+        return float(result_full_score)
+    if submission.essay_full_score is not None:
+        return float(submission.essay_full_score)
+    return float(submission.assignment.full_score if submission.assignment else 0)
+
+
+def _cap_score_value(score, full_score):
+    if score is None:
+        return None
+    try:
+        value = float(score)
+        full = float(full_score) if full_score is not None else None
+    except (TypeError, ValueError):
+        return score
+    if full is not None and full > 0 and value > full:
+        value = full
+    return int(value) if value.is_integer() else value
+
+
 def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
     assignment = submission.assignment
     result = submission.grading_result
-    answer_sheet = (result.ai_metadata or {}).get("answer_sheet") if result and isinstance(result.ai_metadata, dict) else None
     detected_subject = _detected_subject_from_metadata(result.ai_metadata) if result and isinstance(result.ai_metadata, dict) else ""
-    grading_full_score = (
-        answer_sheet.get("full_score")
-        if isinstance(answer_sheet, dict) and answer_sheet.get("full_score") is not None
-        else None
-    )
+    grading_full_score = _grading_result_full_score(result)
+    display_full_score = grading_full_score if grading_full_score is not None else submission.assignment.full_score
+    ai_score = _cap_score_value(submission.ai_score, display_full_score)
+    teacher_score = _cap_score_value(submission.teacher_score, display_full_score)
     data = {
         "id": submission.id,
         "student": _user_to_dict(submission.student),
@@ -1259,13 +1306,14 @@ def _submission_to_dict(submission: Submission, detail: bool = False) -> dict:
         "batch_id": submission.batch_id,
         "pages": submission.pages or [],
         "essay_prompt": submission.essay_prompt or "",
+        "essay_full_score": submission.essay_full_score,
         "ocr_text": submission.ocr_text,
         "ocr_engine": submission.ocr_engine,
         "ocr_confidence": submission.ocr_confidence,
         "ocr_warnings": submission.ocr_warnings or [],
-        "ai_score": submission.ai_score,
-        "teacher_score": submission.teacher_score,
-        "effective_score": submission.teacher_score if submission.teacher_score is not None else submission.ai_score,
+        "ai_score": ai_score,
+        "teacher_score": teacher_score,
+        "effective_score": teacher_score if teacher_score is not None else ai_score,
         "grading_full_score": grading_full_score,
         "status": submission.status,
         "created_at": submission.created_at.isoformat() if submission.created_at else "",
